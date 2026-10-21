@@ -128,6 +128,12 @@ jobs:
               raise SystemExit("prompt-aware synthetic mask selection failed")
           if not isinstance(benchmark.get("synthetic_mask_selection_seconds"), (int, float)):
               raise SystemExit("mask selection and restoration time is missing")
+          if benchmark.get("synthetic_trimap_shape") != [1536, 2048]:
+              raise SystemExit("subject trimap generation is missing")
+          if benchmark.get("synthetic_trimap_radius") != 8:
+              raise SystemExit("subject trimap radius does not match the reference profile")
+          if not isinstance(benchmark.get("synthetic_trimap_seconds"), (int, float)):
+              raise SystemExit("subject trimap time is missing")
           if benchmark.get("cache_used_bytes") != 16777216:
               raise SystemExit("expected 16 MiB of reusable image features")
           if len(benchmark.get("warm_prompt_runs", [])) != 3:
@@ -139,6 +145,7 @@ jobs:
               "process_tree_peak_uss_bytes": report.get("process_tree_peak_uss_bytes"),
               "preprocessing_seconds": benchmark.get("preprocessing_seconds"),
               "synthetic_mask_selection_seconds": benchmark.get("synthetic_mask_selection_seconds"),
+              "synthetic_trimap_seconds": benchmark.get("synthetic_trimap_seconds"),
               "cold_encoder_seconds": benchmark.get("cold_encoder_seconds"),
               "warm_prompt_runs": benchmark.get("warm_prompt_runs"),
           }, sort_keys=True))

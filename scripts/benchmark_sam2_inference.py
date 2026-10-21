@@ -29,9 +29,11 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
 
     from laika.subject import (
         Sam2TinyOnnx,
+        build_subject_trimap,
         normalized_points_to_sam,
         prepare_sam_input,
         select_subject_mask,
+        subject_trimap_radius,
     )
 
     report_path = args.validation_report.resolve()
@@ -100,6 +102,11 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         height=1536,
     )
     mask_selection_seconds = time.perf_counter() - mask_started
+    trimap_started = time.perf_counter()
+    trimap = build_subject_trimap(selected_mask.mask)
+    trimap_seconds = time.perf_counter() - trimap_started
+    if trimap.shape != (1536, 2048) or trimap.dtype != np.float32:
+        raise RuntimeError("subject trimap has an invalid shape or data type")
 
     return {
         "model_id": validation["model_id"],
@@ -121,6 +128,9 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         "synthetic_mask_selection_seconds": mask_selection_seconds,
         "synthetic_selected_candidate_index": selected_mask.candidate_index,
         "synthetic_selected_mask_shape": list(selected_mask.mask.shape),
+        "synthetic_trimap_shape": list(trimap.shape),
+        "synthetic_trimap_radius": subject_trimap_radius(2048, 1536),
+        "synthetic_trimap_seconds": trimap_seconds,
         "cold_encoder_seconds": cold.encoder_seconds,
         "cold_decoder_seconds": cold.decoder_seconds,
         "cold_predict_wall_seconds": cold_total_seconds,

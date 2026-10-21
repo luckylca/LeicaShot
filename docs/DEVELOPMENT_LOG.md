@@ -97,3 +97,9 @@
 - Added deterministic selection of the highest-scoring SAM candidate that covers the positive prompt. The chosen logits are bilinearly restored with half-pixel coordinates to the bounded subject-analysis raster and thresholded at zero. Input checks cover score/logit shape, dtype, finite values, point bounds, and the 2048-pixel analysis limit.
 - Added scalar resampling parity, prompt-aware selection, mask coverage, failure, and input validation tests. Local Ruff and all 57 tests pass; CI passed on Ubuntu/macOS/Windows with Python 3.11/3.13.
 - Extended the 2 GiB benchmark with 2048×1536 mask restoration using a separate synthetic three-candidate mask (not SAM's model output). Three fresh cgroup workers completed with zero OOM; median cgroup peak was 1,113,702,400 B (1,062.1 MiB), mask selection/restoration took 0.050 s, and preprocessing/cold encoding medians were 0.213 s / 3.903 s. The SAM graph's maximum absolute mask-logit error remained `3.72e-5`. This does not establish real-photo segmentation quality or full-pipeline memory; details are in the [SAM cgroup report](benchmarks/m1-sam2-cgroup-2026-10-21.md).
+
+## 2026-10-21 — subject trimap generation
+
+- Implemented the reference's ellipse-based morphology: a pixel is foreground only if all in-image neighborhood samples are foreground, background if none are, and unknown otherwise. Out-of-image samples are neutral. The default radius scales from 5 px at a 1220 long edge to 8 px at 2048.
+- Row prefix sums and bounded row chunks avoid scanning each neighborhood pixel-by-pixel. Scalar fixtures cover radius 1/2/5, border behavior, uniform masks, radius scaling, no mutation, and invalid input. Local Ruff and all 63 tests pass.
+- Extended the optional 2 GiB model benchmark to exercise the mask-selection and trimap path with synthetic candidate logits; constrained memory/time results are pending this PR's model-smoke run.

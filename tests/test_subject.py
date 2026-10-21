@@ -14,9 +14,11 @@ from laika.subject import (
     Sam2TinyOnnx,
     _prepare_sam_rgb,
     _resize_mask_bilinear,
+    build_subject_trimap,
     normalized_points_to_sam,
     prepare_sam_input,
     select_subject_mask,
+    subject_trimap_radius,
 )
 
 
@@ -206,6 +208,73 @@ def test_mask_resize_matches_reference_half_pixel_bilinear() -> None:
     actual = _resize_mask_bilinear(low_res, 17, 11)
 
     np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-7)
+
+
+def scalar_reference_trimap(mask: np.ndarray, radius: int) -> np.ndarray:
+    height, width = mask.shape
+    row_radii = [
+        round(radius * np.sqrt(max(0.0, 1 - (offset / radius) ** 2)))
+        for offset in range(-radius, radius + 1)
+    ]
+    output = np.empty(mask.shape, dtype=np.float32)
+    for y in range(height):
+        for x in range(width):
+            foreground = 0
+            cells = 0
+            for dy, row_radius in zip(
+                range(-radius, radius + 1), row_radii, strict=True
+            ):
+                yy = y + dy
+                if not 0 <= yy < height:
+                    continue
+                for xx in range(max(0, x - row_radius), min(width, x + row_radius + 1)):
+                    cells += 1
+                    foreground += int(mask[yy, xx] > 0.5)
+            if foreground == cells:
+                output[y, x] = 1.0
+            elif foreground == 0:
+                output[y, x] = 0.0
+            else:
+                output[y, x] = np.float32(128) / np.float32(255)
+    return output
+
+
+@pytest.mark.parametrize("radius", [1, 2, 5])
+def test_subject_trimap_matches_scalar_ellipse_and_neutral_edges(radius) -> None:
+    mask = np.zeros((8, 11), dtype=np.float32)
+    mask[1:7, 3:9] = 1.0
+    original = mask.copy()
+
+    actual = build_subject_trimap(mask, radius=radius)
+    expected = scalar_reference_trimap(mask, radius)
+
+    assert actual.shape == mask.shape
+    assert actual.dtype == np.float32
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(mask, original)
+    assert set(np.unique(actual)).issubset(
+        {0.0, np.float32(128) / np.float32(255), 1.0}
+    )
+
+
+def test_subject_trimap_keeps_uniform_masks_exact_at_image_edges() -> None:
+    foreground = np.ones((3, 5), dtype=np.float32)
+    background = np.zeros((3, 5), dtype=np.float32)
+
+    assert np.all(build_subject_trimap(foreground) == 1.0)
+    assert np.all(build_subject_trimap(background) == 0.0)
+
+
+def test_subject_trimap_radius_tracks_reference_analysis_scale() -> None:
+    assert subject_trimap_radius(400, 1220) == 5
+    assert subject_trimap_radius(1536, 2048) == 8
+
+
+def test_subject_trimap_rejects_invalid_mask_and_radius() -> None:
+    with pytest.raises(ValueError, match="float32"):
+        build_subject_trimap(np.zeros((2, 2), dtype=np.uint8))
+    with pytest.raises(ValueError, match="radius must be a positive integer"):
+        build_subject_trimap(np.zeros((2, 2), dtype=np.float32), radius=0)
 
 
 def test_mask_selection_fails_when_no_candidate_covers_prompt() -> None:
