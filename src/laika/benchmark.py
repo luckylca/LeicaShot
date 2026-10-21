@@ -76,7 +76,13 @@ def _process_tree_metrics(root_pid: int) -> tuple[int, int | None, float, int]:
                 pass
             try:
                 uss_total += process.memory_full_info().uss
-            except (AttributeError, psutil.AccessDenied, psutil.NoSuchProcess, OSError):
+            except (
+                AttributeError,
+                psutil.AccessDenied,
+                psutil.NoSuchProcess,
+                OSError,
+                RuntimeError,
+            ):
                 uss_available = False
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
             continue
