@@ -33,6 +33,9 @@ class ModelArtifact:
     sha256: str
     license: str
     status: str
+    source_revision: str | None = None
+    source_code_revision: str | None = None
+    license_url: str | None = None
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> ModelArtifact:
@@ -68,6 +71,21 @@ class ModelArtifact:
             sha256=digest,
             license=str(record["license"]),
             status=str(record["status"]),
+            source_revision=(
+                str(record["source_revision"])
+                if record.get("source_revision") is not None
+                else None
+            ),
+            source_code_revision=(
+                str(record["source_code_revision"])
+                if record.get("source_code_revision") is not None
+                else None
+            ),
+            license_url=(
+                str(record["license_url"])
+                if record.get("license_url") is not None
+                else None
+            ),
         )
 
 

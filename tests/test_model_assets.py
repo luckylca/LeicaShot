@@ -41,6 +41,25 @@ def test_manifest_pins_depth_small_without_bundling_weights() -> None:
         == "715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378"
     )
     assert artifact.license == "Apache-2.0"
+    assert artifact.source_revision == "05bbaec5306c04f1fa00a8c376c7dcf4153e7fe8"
+    assert artifact.source_code_revision == "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf"
+    assert not (Path(__file__).parents[1] / "models" / artifact.filename).exists()
+
+
+def test_manifest_pins_official_sam21_tiny_checkpoint_without_bundling() -> None:
+    artifacts = load_manifest()
+    artifact = artifacts["sam2.1-hiera-tiny"]
+    project_manifest = Path(__file__).parents[1] / "models" / "manifest.json"
+
+    assert project_manifest.read_bytes() == MANIFEST_PATH.read_bytes()
+    assert artifact.expected_bytes == 156_008_466
+    assert (
+        artifact.sha256
+        == "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69"
+    )
+    assert artifact.license == "Apache-2.0"
+    assert artifact.source_revision == "36f406a75c9be63c7f429da63246273f028c6fd4"
+    assert artifact.source_code_revision == "2b90b9f5ceec907a1c18123530e92e794ad901a4"
     assert not (Path(__file__).parents[1] / "models" / artifact.filename).exists()
 
 

@@ -14,6 +14,20 @@
       "license": "Apache-2.0",
       "license_url": "https://github.com/DepthAnything/Depth-Anything-V2/blob/a561b849ebae10a6f5ef49e26c83cbbcd36c71bf/LICENSE",
       "status": "pytorch-cpu-inference-and-static-dynamic-onnx-parity-validated"
+    },
+    {
+      "id": "sam2.1-hiera-tiny",
+      "name": "SAM 2.1 Hiera Tiny",
+      "artifact": "sam2.1_hiera_tiny.pt",
+      "format": "pytorch-state-dict",
+      "source_url": "https://huggingface.co/facebook/sam2.1-hiera-tiny/resolve/36f406a75c9be63c7f429da63246273f028c6fd4/sam2.1_hiera_tiny.pt",
+      "source_revision": "36f406a75c9be63c7f429da63246273f028c6fd4",
+      "source_code_revision": "2b90b9f5ceec907a1c18123530e92e794ad901a4",
+      "expected_bytes": 156008466,
+      "sha256": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
+      "license": "Apache-2.0",
+      "license_url": "https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/LICENSE",
+      "status": "weights-pinned-awaiting-independent-export-validation"
     }
   ]
 }

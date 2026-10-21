@@ -9,6 +9,139 @@ permissions:
   contents: read
 
 jobs:
+  sam2-1-hiera-tiny:
+    name: SAM 2.1 Hiera Tiny · split ONNX parity
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'sam2-model-smoke'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned CPU export and inference toolchain
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            torch==2.14.1 torchvision==0.29.1
+          python -m pip install \
+            numpy==2.4.6 onnx==1.23.2 onnxruntime==1.31.0
+      - name: Checkout pinned official SAM 2 implementation
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/facebookresearch/sam2.git \
+            "$RUNNER_TEMP/sam2"
+          git -C "$RUNNER_TEMP/sam2" \
+            checkout 2b90b9f5ceec907a1c18123530e92e794ad901a4
+          SAM2_BUILD_CUDA=0 python -m pip install -e "$RUNNER_TEMP/sam2"
+          python -m pip install -e .
+      - name: Download and verify official SAM 2.1 Tiny checkpoint
+        run: |
+          laika-models fetch sam2.1-hiera-tiny \
+            --cache-dir "$RUNNER_TEMP/laika-models"
+      - name: Export split encoder/decoder and compare PyTorch with ONNX
+        run: |
+          python scripts/export_sam2_tiny_onnx.py \
+            --source-checkout "$RUNNER_TEMP/sam2" \
+            --weights "$RUNNER_TEMP/laika-models/sam2.1_hiera_tiny.pt" \
+            --output-dir "$RUNNER_TEMP/sam2-onnx" \
+            --threads 1 --max-abs-tolerance 0.001
+      - name: Measure cold SAM worker and cached prompt inference
+        run: |
+          python scripts/benchmark_sam2_inference.py \
+            --image-encoder "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny_image_encoder.onnx" \
+            --image-decoder "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny_image_decoder.onnx" \
+            --validation-report "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny.validation.json" \
+            --threads 1 --runs 3 \
+            --output "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny.benchmark.json"
+      - name: Build isolated Linux CPU benchmark image
+        run: |
+          mkdir -p "$RUNNER_TEMP/laika-sam2-cgroup-reports"
+          mkdir -p "$RUNNER_TEMP/laika-sam2-docker-context"
+          cat > "$RUNNER_TEMP/laika-sam2-docker-context/Dockerfile" <<'EOF'
+          FROM python:3.11-slim-bookworm
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends libgomp1 \
+              && rm -rf /var/lib/apt/lists/*
+          RUN python -m pip install --no-cache-dir \
+              "numpy==2.4.6" "pillow>=10.3" "psutil>=5.9" \
+              "onnxruntime==1.31.0"
+          ENV PYTHONPATH=/workspace/src
+          ENV PYTHONDONTWRITEBYTECODE=1
+          WORKDIR /workspace
+          EOF
+          docker build \
+            --file "$RUNNER_TEMP/laika-sam2-docker-context/Dockerfile" \
+            --tag laika-sam2-runtime:cpu \
+            "$RUNNER_TEMP/laika-sam2-docker-context"
+      - name: Measure SAM stage in three fresh 2 GiB cgroup workers
+        shell: bash
+        run: |
+          set -euo pipefail
+          for trial in 1 2 3; do
+            report="$RUNNER_TEMP/laika-sam2-cgroup-reports/2g-trial${trial}.json"
+            docker run --rm \
+              --memory=2g \
+              --memory-swap=2g \
+              --cpus=2 \
+              --network=none \
+              --read-only \
+              --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+              --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+              --mount "type=bind,src=$RUNNER_TEMP/sam2-onnx,dst=/models,readonly" \
+              --mount "type=bind,src=$RUNNER_TEMP/laika-sam2-cgroup-reports,dst=/reports" \
+              --workdir /workspace \
+              laika-sam2-runtime:cpu \
+              python scripts/benchmark_sam2_inference.py \
+                --image-encoder /models/sam2.1_hiera_tiny_image_encoder.onnx \
+                --image-decoder /models/sam2.1_hiera_tiny_image_decoder.onnx \
+                --validation-report /models/sam2.1_hiera_tiny.validation.json \
+                --threads 1 --runs 3 --output "/reports/2g-trial${trial}.json"
+            python - "$report" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as stream:
+              report = json.load(stream)
+          cgroup = report.get("cgroup_v2_after") or {}
+          if cgroup.get("limit_bytes") != 2147483648:
+              raise SystemExit(f"expected a 2 GiB cgroup cap: {cgroup}")
+          peak = cgroup.get("peak_bytes")
+          if not isinstance(peak, int) or peak <= 0 or peak > 2147483648:
+              raise SystemExit(f"invalid cgroup peak: {peak}")
+          events = cgroup.get("memory_events") or {}
+          if events.get("oom", 0) or events.get("oom_kill", 0):
+              raise SystemExit(f"unexpected cgroup OOM events: {events}")
+          benchmark = report["benchmark"]
+          if benchmark.get("cache_used_bytes") != 16777216:
+              raise SystemExit("expected 16 MiB of reusable image features")
+          if len(benchmark.get("warm_prompt_runs", [])) != 3:
+              raise SystemExit("all three cached prompt runs must complete")
+          print(json.dumps({
+              "cgroup_limit_bytes": cgroup["limit_bytes"],
+              "cgroup_peak_bytes": peak,
+              "process_tree_peak_rss_bytes": report.get("process_tree_peak_rss_bytes"),
+              "process_tree_peak_uss_bytes": report.get("process_tree_peak_uss_bytes"),
+              "cold_encoder_seconds": benchmark.get("cold_encoder_seconds"),
+              "warm_prompt_runs": benchmark.get("warm_prompt_runs"),
+          }, sort_keys=True))
+          PY
+          done
+      - name: Upload SAM validation and benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laika-sam2-onnx-validation-and-benchmark
+          path: |
+            ${{ runner.temp }}/sam2-onnx/*.json
+            ${{ runner.temp }}/laika-sam2-cgroup-reports/*.json
+          if-no-files-found: ignore
+
   depth-anything-v2-small:
     name: Depth Anything V2 Small · CPU ONNX parity
     if: >-
