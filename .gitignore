@@ -1,0 +1,45 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Model artifacts and runtime data
+models/
+model-cache/
+cache/
+uploads/
+outputs/
+artifacts/
+benchmarks/results/
+*.onnx
+*.pt
+*.pth
+*.safetensors
+*.tflite
+*.engine
+
+# Local image data and generated output
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.heic
+*.dng
+!docs/**/*.png
+!docs/**/*.jpg
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+.vscode/
