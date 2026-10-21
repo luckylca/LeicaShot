@@ -62,3 +62,9 @@
 - Added geometry, padding, preprocessing, CLI budget, and PyTorch/ONNX parity coverage. The optional model workflow checks both profiles, odd-edge padding, and a 4K source.
 - Compared the full-attention graph and q128 graph on three fresh Mac M1 workers each using seeded 3840×2160 RGB inputs and the current reference profile (analysis 1220×686, network 1232×686, full 3840×2160 output). Median RSS was 1,179,484,160 B (1,124.8 MiB) baseline and 742,752,256 B (708.3 MiB) q128, 37.0% lower. Median wall time was 10.479 s and 9.735 s; this small sample is not a CPU speed guarantee.
 - q128 output matched pinned PyTorch at the same prepared tensor with max/mean/p99 error `8.11e-6` / `2.84e-6` / `5.01e-6`; full output shape and finiteness were checked. These are synthetic, single-stage measurements on an unconstrained Mac process, not a real-photo or complete-pipeline 4/2 GiB result. See the [reference sizing report](benchmarks/m3-reference-depth-analysis-sizing-2026-10-21.md).
+
+## 2026-10-21 — enforced depth-stage memory limits
+
+- Added a Linux Docker benchmark with cgroup v2 `memory.max`, `memory.peak`, and OOM event capture. It ran three fresh 4K CLI workers per graph under both 4 GiB and 2 GiB caps, with swap disabled and two CPUs.
+- All 12 trials completed with full 3840×2160 outputs and zero OOM kills. Median cgroup peak under 2 GiB was 1,428,115,456 B (1,362.0 MiB) for full attention and 733,523,968 B (699.5 MiB) for q128; q128 reduced peak by 48.6% but median inference was 10.9% slower.
+- Both tested graphs fit this depth-only 2 GiB container. This does not validate the full Laika pipeline or a 2 GiB minimum server. Per-trial cgroup artifacts and limitations are in the [depth cgroup report](benchmarks/m3-depth-cgroup-memory-limits-2026-10-21.md).
