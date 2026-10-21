@@ -1,5 +1,7 @@
 # ADR 0001: Independent implementation and reference boundary
 
+> **Superseded for model-use authorization by [ADR 0002](0002-m9-project-authorization.md).** This record preserves the initial 2026-10-21 assessment. Laika proceeds with M9 and the other required models under the user's subsequent authorization; model weights remain local unless public redistribution rights are separately established.
+
 - Status: accepted
 - Date: 2026-10-21
 

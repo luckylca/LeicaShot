@@ -1,10 +1,12 @@
 # Laika
 
-Laika is a new cross-platform Python image processing engine focused on low peak memory and practical CPU inference. It is an independent project with its own API, implementation, and version history. The Android reference project is research material only; its source and model files are not copied into this repository.
+Laika is a new cross-platform Python image processing engine focused on low peak memory and practical CPU inference. It is an independent project with its own API, implementation, and version history. The Android reference project is research material only; its source and model weights are not copied into this repository.
 
-**Status:** early 0.x development. A CPU Depth Anything V2 Small ONNX adapter, a reproducible dynamic exporter, exact global attention query chunking, reference-sized depth preprocessing, SAM 2.1 subject-prompt primitives, an experimental local-weight ViTMatte CPU/tiling adapter, and native Lab color-fusion postprocessing are available on the integration branch. No Laika color-prediction model is included. The complete subject workflow, AI color prediction, bokeh, composition, and HTTP pipeline are not implemented.
+**Status:** early 0.x development. Laika now includes an M9 series 3.0 epoch11 CPU ONNX path connected to the existing Lab detail fusion, with full-resolution PNG/JPEG output, EXIF correction, a hash-verified local model contract, and Low Memory/Balanced execution strategies. A CPU Depth Anything V2 Small ONNX adapter, exact global attention query chunking, SAM subject-prompt primitives, experimental ViTMatte CPU/tiling support, and model-free image I/O are also available. The complete subject workflow, neural bokeh, GAIC composition, and HTTP pipeline remain in progress.
 
-The Composition-1k ViTMatte checkpoint is excluded from commercial use and redistribution under Adobe's dataset terms; its published model-card license label does not override those terms. Laika does not fetch or ship those weights.
+The first real-photo M9 CPU/RSS measurements and numerical comparison are recorded in the [M9 photo benchmark](docs/benchmarks/m4-m9-inference-2026-10-22.md).
+
+The user confirmed that required model-use authorizations, including M9 and the other planned models, are in place. Model weights remain local user-provided assets unless separate public redistribution rights are established; Laika does not commit model files.
 
 ## Project principles
 
@@ -20,4 +22,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md), the [architecture](docs/ARCHITECTURE.md)
 
 ## License status
 
-The Laika source license has not yet been selected. No source or model material from the reference application is included. Model availability and license status are tracked separately; the reference M9 model is explicitly personal non-commercial and is not part of Laika.
+The Laika source license has not yet been selected. M9 use in this project is based on the user's confirmation that the required authorization is in place. The model stays in a user-provided local asset path; this project does not claim public model redistribution rights. See the [M9 model record](models/m9-local.json) and [model guide](docs/MODELS.md).
