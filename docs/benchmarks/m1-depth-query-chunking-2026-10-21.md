@@ -33,15 +33,17 @@ Runtime against PyTorch on deterministic inputs at three dynamic shapes.
 | Query chunk | Peak process-tree RSS | Median inference |
 | ---: | ---: | ---: |
 | Full attention baseline | 1,192,050,688 B (1,136.8 MiB) | 7.397 s |
+| 16 | 711,933,952 B (678.9 MiB) | 9.158 s |
 | 32 | 457,261,056 B (436.1 MiB) | 8.209 s |
 | 64 | 435,109,888 B (415.0 MiB) | 7.355 s |
 | 128 | 487,211,008 B (464.6 MiB) | 6.792 s |
 
-All three chunk sizes produced zero maximum absolute difference from the
+All four chunk sizes produced zero maximum absolute difference from the
 unmodified PyTorch attention in the tested shapes. The ONNX output's maximum
 absolute difference from its PyTorch reference was `1.67e-5` at most, below the
 `1e-4` acceptance threshold. In this single direct-model sample, chunk 64 had
-the lowest RSS and chunk 128 had the shortest median inference; RSS did not
+the lowest RSS and chunk 128 had the shortest median inference. Chunk 16 used
+more RSS than 32, 64, and 128 and had the slowest inference; RSS did not
 decrease monotonically as chunk size changed.
 
 ## Full image-to-depth CLI trials

@@ -78,7 +78,7 @@ speed claim. At the same-size 1400×518 input, preprocessing took 2.4–4.1 ms
 and restoring the output size took under 1.2 ms. macOS USS and cgroup readings
 were unavailable. See the separate
 [direct attention experiment](m1-depth-query-chunking-2026-10-21.md) for its
-32/64/128 query-size measurements.
+16/32/64/128 query-size measurements.
 
 ## Limits
 
