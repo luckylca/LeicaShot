@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -42,6 +43,19 @@ class FakeSession:
         return [values["input"].copy()]
 
 
+def _install_fake_onnxruntime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            __version__="test",
+            SessionOptions=SimpleNamespace,
+            ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential"),
+            GraphOptimizationLevel=SimpleNamespace(ORT_ENABLE_ALL="all"),
+        ),
+    )
+
+
 def test_model_size_uses_reference_half_up_fit() -> None:
     assert m9_model_size(1920, 1080) == (1024, 576)
     assert m9_model_size(732, 475) == (1024, 664)
@@ -66,7 +80,10 @@ def test_preprocess_is_rgb_nchw_float32_and_reference_normalized() -> None:
     image.close()
 
 
-def test_m9_verifies_hash_and_enforces_io_contract(tmp_path: Path) -> None:
+def test_m9_verifies_hash_and_enforces_io_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
     model = tmp_path / "local.onnx"
     model.write_bytes(b"fixture model")
     digest = hashlib.sha256(model.read_bytes()).hexdigest()
@@ -98,7 +115,10 @@ def test_m9_verifies_hash_and_enforces_io_contract(tmp_path: Path) -> None:
         M9Onnx(model, expected_sha256="0" * 64, session_factory=factory)
 
 
-def test_m9_rejects_wrong_input_output_contract(tmp_path: Path) -> None:
+def test_m9_rejects_wrong_input_output_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
     model = tmp_path / "local.onnx"
     model.write_bytes(b"fixture model")
     digest = hashlib.sha256(model.read_bytes()).hexdigest()
