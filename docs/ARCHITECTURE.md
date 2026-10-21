@@ -2,7 +2,7 @@
 
 ## Current status
 
-This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has a CPU depth adapter in `laika.depth` and a `laika depth` CLI command with the reference max-edge sizing profile and an explicit upstream lower-bound profile. SAM 2.1 prompt preparation/selection and an experimental caller-supplied ViTMatte CPU/tile adapter are in progress. M9 color transfer, neural bokeh, complete subject workflow, GAIC composition, HTTP tasks, and the complete image pipeline remain unimplemented.
+This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has a CPU depth adapter in `laika.depth` and a `laika depth` CLI command with the reference max-edge sizing profile and an explicit upstream lower-bound profile. SAM 2.1 prompt preparation/selection, an experimental caller-supplied ViTMatte CPU/tile adapter, and native Lab detail-fusion postprocessing are in progress. AI color prediction, neural bokeh, complete subject workflow, GAIC composition, HTTP tasks, and the complete image pipeline remain unimplemented.
 
 ## Target boundaries
 
@@ -31,6 +31,8 @@ The core engine will not depend on FastAPI or a browser. The API will validate a
 The current depth adapter accepts caller-owned HWC `uint8` RGB arrays and returns a caller-owned float32 depth map at the exact input dimensions. It loads only a dynamic ONNX model whose adjacent validation report and SHA-256 match. Its ONNX session is explicitly closed through a context manager. By default, input sizing caps the analysis long edge at 1220 without upscaling, uses Pillow bicubic resampling, replicate-pads right and bottom edges to a multiple of 14, then applies ImageNet normalization and NCHW layout. Passing `input_size=518` selects the separate upstream lower-bound policy. Final depth resizing implements bilinear `align_corners=True` in bounded row blocks.
 
 The subject path currently exposes SAM preprocessing, prompt-mask selection, and ellipse trimap generation. `laika.matting` packs an RGB/trimap tensor at a multiple of 32 and exposes an optional CPU ONNX adapter plus 512/768/1024 overlapping matte tiles. It is a low-level experimental component: no ViTMatte checkpoint is verified or distributed, and no end-to-end subject quality or memory result is available. See the [ViTMatte study](research/vitmatte-integration.md).
+
+`laika.color.fuse_lab_detail` fuses a caller-provided predicted RGB image with original detail in OpenCV Lab space. Its row-streamed variant uses Gaussian halos and matches the full-frame output exactly on synthetic tests. Three fresh-worker Mac measurements on synthetic 4K arrays found an 11.2% median RSS reduction at 512-row chunks with 34.4% longer fusion time; resolution-specific results are in the [Lab fusion report](benchmarks/m3-lab-fusion-row-streaming-2026-10-21.md). No color prediction model is included.
 
 ## Memory-first execution plan
 
