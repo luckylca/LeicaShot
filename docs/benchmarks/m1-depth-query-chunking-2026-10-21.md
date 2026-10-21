@@ -42,20 +42,24 @@ experimental choice.
 
 ## Linux opt-in model smoke
 
-The `model-smoke` GitHub Actions job also compared baseline and chunked ONNX
-graphs on an x86_64 Linux hosted runner (4 logical CPUs, Python 3.11.17,
-ONNX Runtime 1.31.0, one inference thread). At 1400×518, with one warmup,
-three measured runs, and 5 ms process-tree RSS sampling:
+The opt-in `model-smoke` workflow compared the two graphs twice on x86_64 Linux
+hosted runners (4 logical CPUs, Python 3.11.17, ONNX Runtime 1.31.0, one
+inference thread). Each run used a 1400×518 tensor, one warmup, three measured
+inferences, and 5 ms process-tree RSS sampling:
 
-| Graph | Peak process-tree RSS | Median inference |
-| --- | ---: | ---: |
-| Full attention baseline | 1,811,435,520 B (1,727.5 MiB) | 6.079 s |
-| Query chunk 128 | 970,530,816 B (925.6 MiB) | 6.633 s |
+| Trial | Graph | Peak process-tree RSS | Median inference |
+| ---: | --- | ---: | ---: |
+| 1 | Full attention baseline | 1,811,435,520 B (1,727.5 MiB) | 6.079 s |
+| 1 | Query chunk 128 | 970,530,816 B (925.6 MiB) | 6.633 s |
+| 2 | Full attention baseline | 1,820,291,072 B (1,736.0 MiB) | 5.060 s |
+| 2 | Query chunk 128 | 979,382,272 B (934.0 MiB) | 4.809 s |
 
-That runner measured 46.4% lower RSS and 9.1% higher median latency for the
-chunked graph. ONNX maximum absolute error was `1.62e-5`, and the graph retained
-all 12 loops. The runner reported no cgroup memory limit; this is a
-cross-platform model smoke, not a low-memory constrained-system test.
+Across both Linux runs the chunked graph used 46.2–46.4% less RSS. Latency
+varied: +9.1% in the first run and −5.0% in the second, so these shared-runner
+timings do not establish a speed change. The ONNX max absolute error was
+`1.62e-5`, and the graph retained all 12 loops. Neither runner had a cgroup
+memory limit; these are cross-platform model smokes, not low-memory constrained
+system tests.
 
 ## Limits
 
