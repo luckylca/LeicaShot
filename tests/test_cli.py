@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from laika.benchmark import measure_image
-from laika.cli import _read_rgb, _run_depth, _save_depth
+from laika.cli import _read_rgb, _run_depth, _save_depth, main
 from laika.engine import ImageInputError, ImageLimitError
 
 
@@ -94,6 +94,71 @@ def test_depth_cli_writes_numpy_output_without_pickle(tmp_path: Path) -> None:
 
     np.testing.assert_array_equal(np.load(output, allow_pickle=False), depth)
     assert not list(output.parent.glob("*.tmp"))
+
+
+def test_bokeh_cli_connects_depth_map_to_shared_engine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    import laika.cli as cli
+
+    class FakeBokehEngine:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.runtime_info = SimpleNamespace(
+                as_dict=lambda: {"provider": "CPUExecutionProvider"}
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def infer(self, rgb: np.ndarray, defocus: np.ndarray):
+            height, width = rgb.shape[:2]
+            return SimpleNamespace(
+                rgb_nchw=np.zeros((1, 3, height, width), dtype=np.float32)
+            )
+
+    monkeypatch.setattr(cli, "BokehMeARNet", FakeBokehEngine)
+    source = tmp_path / "source.png"
+    depth_path = tmp_path / "depth.npy"
+    destination = tmp_path / "result.png"
+    width, height = 700, 500
+    Image.new("RGB", (width, height), (180, 140, 100)).save(source)
+    depth = np.broadcast_to(
+        np.linspace(0, 1, height, dtype=np.float32)[:, None], (height, width)
+    ).copy()
+    np.save(depth_path, depth, allow_pickle=False)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "laika",
+            "bokeh",
+            str(source),
+            str(depth_path),
+            str(destination),
+            "--model",
+            str(tmp_path / "unused.onnx"),
+            "--aperture",
+            "0.95",
+        ],
+    )
+
+    assert main() == 0
+    report = json.loads(capsys.readouterr().out)
+    with Image.open(destination) as result:
+        assert result.size == (width, height)
+        assert not np.array_equal(
+            np.asarray(result), np.full((height, width, 3), (180, 140, 100))
+        )
+    assert report["model"]["provider"] == "CPUExecutionProvider"
+    assert report["width"] == width
+    assert report["height"] == height
+    assert len(report["scales"]) >= 2
 
 
 def test_depth_cli_rejects_pathological_network_aspect_ratio_before_loading_model(

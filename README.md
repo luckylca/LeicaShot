@@ -1,10 +1,10 @@
 # Laika
 
-Laika is a new cross-platform Python image processing engine focused on low peak memory and practical CPU inference. It is an independent project with its own API, implementation, and version history. The Android reference project is research material only; its source and model weights are not copied into this repository.
+Laika is a new cross-platform Python image processing engine focused on low peak memory and practical CPU inference. It is an independent project with its own API, implementation, and version history. Python is the production engine and service language. Android is used only to run the reference Kotlin engine on a physical phone through ADB for comparison; no Android runtime or virtual device is part of Laika's processing path.
 
-**Status:** early 0.x development. Laika now includes an M9 series 3.0 epoch11 CPU ONNX path connected to the existing Lab detail fusion, with full-resolution PNG/JPEG output, EXIF correction, a hash-verified local model contract, and Low Memory/Balanced execution strategies. A CPU Depth Anything V2 Small ONNX adapter, exact global attention query chunking, SAM subject-prompt primitives, experimental ViTMatte CPU/tiling support, and model-free image I/O are also available. The complete subject workflow, neural bokeh, GAIC composition, and HTTP pipeline remain in progress.
+**Status:** early 0.x development. Laika includes the M9 series 3.0 epoch11 CPU ONNX path connected to Lab detail fusion, with full-resolution PNG/JPEG output and Low Memory/Balanced strategies. A CPU Depth Anything V2 Small adapter, SAM subject-prompt primitives, experimental ViTMatte CPU/tiling support, and a BokehMe ARNet multiscale renderer/CLI are also available. Bokeh highlighting and subject protection, GAIC composition, and the HTTP pipeline remain in progress.
 
-The first real-photo M9 CPU/RSS measurements and numerical comparison are recorded in the [M9 photo benchmark](docs/benchmarks/m4-m9-inference-2026-10-22.md).
+Real-photo CPU, memory, and numerical reports are available for [M9](docs/benchmarks/m4-m9-inference-2026-10-22.md), [depth](docs/benchmarks/m4-depth-real-photo-2026-10-22.md), and [BokehMe ARNet](docs/benchmarks/bokeh-real-photo-2026-10-22.md).
 
 The user confirmed that required model-use authorizations, including M9 and the other planned models, are in place. Model weights remain local user-provided assets unless separate public redistribution rights are established; Laika does not commit model files.
 
@@ -18,7 +18,7 @@ The user confirmed that required model-use authorizations, including M9 and the 
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), the [architecture](docs/ARCHITECTURE.md), the [model guide](docs/MODELS.md), and the [reference study](docs/research/reference-study.md). The CLI includes model-free image I/O and optional depth inference commands; model weights and exports remain outside Git.
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [architecture](docs/ARCHITECTURE.md), the [model guide](docs/MODELS.md), and the [reference study](docs/research/reference-study.md). Python CLI commands include image I/O, depth inference, M9 color, and BokehMe ARNet background rendering. Model weights and exports remain outside Git.
 
 ## License status
 
