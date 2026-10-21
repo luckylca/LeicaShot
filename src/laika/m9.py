@@ -537,7 +537,6 @@ class M9ColorEngine:
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{destination.stem}.", suffix=".tmp", dir=destination.parent
         )
-        os.close(descriptor)
         temporary_path = Path(temporary_name)
         stage = time.perf_counter()
         try:
@@ -548,13 +547,22 @@ class M9ColorEngine:
                     save_options["icc_profile"] = icc_profile
                 if output_format == "JPEG":
                     save_options.update(quality=95, subsampling=0)
-                image.save(temporary_path, format=output_format, **save_options)
+                stream = os.fdopen(descriptor, "w+b")
+                descriptor = -1
+                with stream:
+                    image.save(stream, format=output_format, **save_options)
+                    stream.flush()
+                    os.fsync(stream.fileno())
             finally:
                 image.close()
-            with temporary_path.open("rb") as stream:
-                os.fsync(stream.fileno())
             os.replace(temporary_path, destination)
         except Exception:
+            # If wrapping the descriptor itself failed, ensure it is not leaked.
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
             temporary_path.unlink(missing_ok=True)
             raise
         stages["encode"] = time.perf_counter() - stage
