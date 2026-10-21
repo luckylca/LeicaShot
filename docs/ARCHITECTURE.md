@@ -2,7 +2,7 @@
 
 ## Current status
 
-This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has started with a CPU depth adapter in `laika.depth` and a `laika depth` CLI command. M9 color transfer, neural bokeh, segmentation, matting, GAIC composition, HTTP tasks, and a complete image pipeline are still unimplemented.
+This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has a CPU depth adapter in `laika.depth` and a `laika depth` CLI command with the reference max-edge sizing profile and an explicit upstream lower-bound profile. M9 color transfer, neural bokeh, segmentation, matting, GAIC composition, HTTP tasks, and a complete image pipeline are still unimplemented.
 
 ## Target boundaries
 
@@ -28,7 +28,7 @@ Clients (Python SDK / CLI / HTTP API)
 
 The core engine will not depend on FastAPI or a browser. The API will validate and stage an upload, create a bounded task, call the same engine interface as the SDK and CLI, emit progress, and clean temporary data. Model adapters own their session and tensor lifetimes; task state owns decoded buffers and intermediate artifacts. The scheduler must serialize work when the configured memory budget cannot support overlap.
 
-The current depth adapter accepts caller-owned HWC `uint8` RGB arrays and returns a caller-owned float32 depth map at the exact input dimensions. It loads only a dynamic ONNX model whose adjacent validation report and SHA-256 match. Its ONNX session is explicitly closed through a context manager. Model input preprocessing follows the pinned upstream lower-bound resize, bicubic interpolation, ImageNet normalization, and NCHW contract; final depth resizing implements bilinear `align_corners=True` in bounded row blocks.
+The current depth adapter accepts caller-owned HWC `uint8` RGB arrays and returns a caller-owned float32 depth map at the exact input dimensions. It loads only a dynamic ONNX model whose adjacent validation report and SHA-256 match. Its ONNX session is explicitly closed through a context manager. By default, input sizing caps the analysis long edge at 1220 without upscaling, uses Pillow bicubic resampling, replicate-pads right and bottom edges to a multiple of 14, then applies ImageNet normalization and NCHW layout. Passing `input_size=518` selects the separate upstream lower-bound policy. Final depth resizing implements bilinear `align_corners=True` in bounded row blocks.
 
 ## Memory-first execution plan
 

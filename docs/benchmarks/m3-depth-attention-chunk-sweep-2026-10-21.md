@@ -49,8 +49,9 @@ had the shortest inference. The Linux runner reported cgroup v2
 ## Linux full 4K source CLI sample
 
 One fresh `laika depth` worker per graph processed the same seeded synthetic
-3840×2160 RGB input. All returned a finite 2160×3840 float32 map (33,177,728
-byte `.npy` file). The upstream resize mapped it to a 518×924 network input.
+3840×2160 RGB input under the earlier explicit `--input-size 518` profile.
+All returned a finite 2160×3840 float32 map (33,177,728-byte `.npy` file).
+That lower-bound resize mapped it to a 518×924 network input.
 The runner sampled process-tree RSS every 5 ms; cgroup `memory.max` remained
 `max`.
 
@@ -75,4 +76,5 @@ differ, so these measurements do not justify a single preferred chunk size.
 They are synthetic, single-stage depth tests and do not establish real-photo
 quality or the 4 GiB / 2 GiB complete-edit targets. The 4K output remains at
 full source dimensions; the smaller 518×924 network raster follows the pinned
-upstream resize rule.
+upstream lower-bound resize rule. The current default reference max-edge profile
+has a separate [4K report](m3-reference-depth-analysis-sizing-2026-10-21.md).

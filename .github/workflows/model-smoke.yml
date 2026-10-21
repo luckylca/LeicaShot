@@ -67,7 +67,21 @@ jobs:
             --source-checkout "$RUNNER_TEMP/depth-anything-v2" \
             --weights "$RUNNER_TEMP/laika-models/depth_anything_v2_vits.pth" \
             --onnx "$RUNNER_TEMP/depth-anything-v2-small-dynamic-q128.onnx" \
-            --width 700 --height 400 --threads 1
+            --width 700 --height 400 --input-size 518 --threads 1
+      - name: Validate reference analysis sizing and odd-edge padding
+        run: |
+          python scripts/validate_depth_inference.py \
+            --source-checkout "$RUNNER_TEMP/depth-anything-v2" \
+            --weights "$RUNNER_TEMP/laika-models/depth_anything_v2_vits.pth" \
+            --onnx "$RUNNER_TEMP/depth-anything-v2-small-dynamic-q128.onnx" \
+            --width 225 --height 231 --analysis-max-edge 1220 --threads 1
+      - name: Validate reference sizing on a 4K source image
+        run: |
+          python scripts/validate_depth_inference.py \
+            --source-checkout "$RUNNER_TEMP/depth-anything-v2" \
+            --weights "$RUNNER_TEMP/laika-models/depth_anything_v2_vits.pth" \
+            --onnx "$RUNNER_TEMP/depth-anything-v2-small-dynamic-q128.onnx" \
+            --width 3840 --height 2160 --analysis-max-edge 1220 --threads 1
       - name: Measure PyTorch and ONNX CPU workers
         run: |
           python scripts/benchmark_depth_anything_v2.py \
@@ -100,9 +114,9 @@ jobs:
             --width 1400 --height 518 --threads 1
           python scripts/benchmark_depth_inference.py \
             --model "$RUNNER_TEMP/depth-anything-v2-small-dynamic.onnx" \
-            --width 3840 --height 2160 --threads 1
+            --width 3840 --height 2160 --analysis-max-edge 1220 --threads 1
           for chunk in 16 32 64 128; do
             python scripts/benchmark_depth_inference.py \
               --model "$RUNNER_TEMP/depth-anything-v2-small-dynamic-q${chunk}.onnx" \
-              --width 3840 --height 2160 --threads 1
+              --width 3840 --height 2160 --analysis-max-edge 1220 --threads 1
           done

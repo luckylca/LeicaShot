@@ -12,12 +12,15 @@ graph with the exact global query-chunk-128 graph.
 - Runtime: Python 3.11.16, NumPy 2.4.6, ONNX Runtime 1.31.0, OpenCV 5.0.0.93.
 - Provider and threads: CPUExecutionProvider, one intra-op thread.
 - Input: seeded synthetic RGB PNG, 3840×2160, fresh CLI worker for each trial.
+- Preprocessing profile: the upstream lower-bound mode selected with
+  `--input-size 518`; this predates the current default reference max-edge
+  profile and is retained as a historical result.
 - Sampling: process-tree RSS every 5 ms; process-tree USS and cgroup v2 are not
   available on this macOS host.
 - Output: full 2160×3840 float32 depth map, 33,177,728-byte `.npy` file.
-- Network shape: 518×924 under the pinned upstream aspect-preserving resize
-  rule. The network raster is smaller than the source, while the returned depth
-  map is restored to full source dimensions.
+- Network shape: 518×924 under the explicit upstream aspect-preserving lower-
+  bound resize rule. The network raster is smaller than the source, while the
+  returned depth map is restored to full source dimensions.
 - Baseline graph SHA-256: `79094f23efa5e1df4c7612d4c476020f526f5837d904787358ac160ecb969fce`.
 - Query-chunk-128 graph SHA-256:
   `3e7a177a7e11deb92385bc017355ac14bdffcaf89155ab78fd99851803f3ba99`.
@@ -50,18 +53,18 @@ checkout, run:
 ```bash
 PYTHONPATH=src python scripts/benchmark_depth_inference.py \
   --model /path/to/depth-anything-v2-small-dynamic.onnx \
-  --width 3840 --height 2160 --threads 1 --sample-interval-ms 5
+  --width 3840 --height 2160 --input-size 518 --threads 1 --sample-interval-ms 5
 
 PYTHONPATH=src python scripts/benchmark_depth_inference.py \
   --model /path/to/depth-anything-v2-small-dynamic-q128.onnx \
-  --width 3840 --height 2160 --threads 1 --sample-interval-ms 5
+  --width 3840 --height 2160 --input-size 518 --threads 1 --sample-interval-ms 5
 ```
 
-The opt-in `model-smoke` GitHub Actions workflow also runs these two worker
-measurements on Linux, so future changes can be compared on the same runner
-class. Its first 4K run (Ubuntu 24.04 x86_64, Python 3.11.17, NumPy 2.4.6,
-ONNX Runtime 1.31.0, OpenCV 5.0.0.93, one thread) returned full-size finite
-maps for both graphs. One fresh worker per graph measured:
+An earlier `model-smoke` workflow ran these two worker measurements on Linux.
+Its historical lower-bound-profile 4K run (Ubuntu 24.04 x86_64, Python
+3.11.17, NumPy 2.4.6, ONNX Runtime 1.31.0, OpenCV 5.0.0.93, one thread)
+returned full-size finite maps for both graphs. One fresh worker per graph
+measured:
 
 | Graph | Peak RSS | Inference | Worker wall |
 | --- | ---: | ---: | ---: |
@@ -70,9 +73,14 @@ maps for both graphs. One fresh worker per graph measured:
 
 The cgroup v2 limit was `max`; this single pair showed 24.0% lower q128 RSS,
 with similar timing. It is not a constrained-memory comparison.
+The current workflow measures the reference profile separately; see the
+[reference-sizing report](m3-reference-depth-analysis-sizing-2026-10-21.md).
 
 ## Limits
 
+This is a historical lower-bound-profile result; the current default reference
+profile is measured separately in the
+[reference-sizing report](m3-reference-depth-analysis-sizing-2026-10-21.md).
 The input is synthetic, and the experiment measures only depth estimation. It
 does not establish real-photo depth quality, behavior under a fixed Linux
 cgroup memory limit, or memory use for the full color/bokeh/subject pipeline.
