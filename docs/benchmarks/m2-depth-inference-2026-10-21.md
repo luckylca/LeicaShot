@@ -33,6 +33,14 @@ same seeded 700×400 RGB raster using a query-chunk-128 dynamic ONNX graph:
 - The custom bounded-block align-corners resize matched PyTorch on numeric
   fixtures with maximum absolute error `1.19e-7`.
 
+The GitHub Linux x86_64 model smoke also compared this path with the same pinned
+toolchain. It measured preprocessing max absolute error `1.58e-4` and restored
+depth max/mean/p99 errors `5.15e-5` / `5.58e-6` / `1.53e-5`. The preprocessor
+uses OpenCV bicubic interpolation, whose floating-point results vary slightly
+across CPU architectures. The cross-platform preprocessing tolerance is now
+`2e-4`; the final depth output limit remains `1e-4`. The Linux depth output
+remained inside that unchanged limit.
+
 ## Full CLI worker measurements
 
 Three fresh worker trials per graph were measured on an 8 GiB MacBook Air M1
