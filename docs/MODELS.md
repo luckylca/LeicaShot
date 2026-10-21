@@ -2,7 +2,7 @@
 
 Model files are not committed to Laika. `models/manifest.json` pins artifacts that have an explicit fetch workflow; `laika-models` downloads those into a user cache and makes a file available only after size and SHA-256 match. M9 has a separate local-only record because this repository does not assert public redistribution permission for its weights.
 
-The manifest includes Depth Anything V2 Small and a pinned SAM 2.1 Hiera Tiny checkpoint. The official SAM 2.1 model card declares Apache-2.0 and its pinned checkpoint page records SHA-256 `7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69` and 156,008,466 bytes. The Meta implementation is separately pinned to `2b90b9f5ceec907a1c18123530e92e794ad901a4`. Laika's split encoder/decoder ONNX export passed synthetic-tensor comparison with the upstream PyTorch model, and the bounded embedding cache is covered by mock-session tests. A 2 GiB single-stage CPU measurement is in the [SAM benchmark](benchmarks/m1-sam2-cgroup-2026-10-21.md); it is not a full-pipeline or real-photo quality result.
+The manifest includes Depth Anything V2 Small, SAM 2.1 Hiera Tiny, and the BokehMe ARNet source checkpoint. The official SAM 2.1 model card declares Apache-2.0 and its pinned checkpoint page records SHA-256 `7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69` and 156,008,466 bytes. The Meta implementation is separately pinned to `2b90b9f5ceec907a1c18123530e92e794ad901a4`. Laika's split encoder/decoder ONNX export passed synthetic-tensor comparison with the upstream PyTorch model, and the bounded embedding cache is covered by mock-session tests. A 2 GiB single-stage CPU measurement is in the [SAM benchmark](benchmarks/m1-sam2-cgroup-2026-10-21.md); it is not a full-pipeline or real-photo quality result.
 
 ## M9 series 3.0 epoch11
 
@@ -25,16 +25,62 @@ laika color input.jpg output.png \
 
 The local `scripts/benchmark_m9.py` command runs fresh CLI workers and samples process-tree RSS. It can compare row chunk heights against full-height fusion without committing an image or model. On macOS it reports sampled RSS and cannot claim a cgroup memory limit; constrained 4/2 GiB service verification requires Linux cgroups.
 
+## BokehMe ARNet
+
+Laika uses the BokehMe ARNet checkpoint from upstream commit `8b3ed556dc146207c9bb39fccd078a113f8d1bd8`. The checkpoint is 11,101,736 bytes with SHA-256 `6c7dba6f32e3afc8e984eb5adfecfea5d13b6f4ebd132a5a890beba384be4752`. Its project use is authorized by the user's confirmation. Keep checkpoint and ONNX files local; this record does not assert public redistribution permission.
+
+`tools/export_bokeh_arnet.py` checks the pinned upstream `neural_renderer.py` source hash and checkpoint hash, uses PyTorch's `weights_only=True` loader with a narrow NumPy metadata allowlist, and exports a dynamic opset-17 ONNX graph. It fixes gamma at 0.3, retains the even-size resize and pixel-unshuffle path, converts internal operators/weights to FP16, and keeps external tensors FP32. The output is stored beside a validation report; `BokehMeARNet` compares the actual model SHA-256 with that report before opening ONNX Runtime. The original reference ONNX hash is `a3aa5fa6a0818f36dbfa4be4dd5471d874cea5981357b7aeb28919954e70d05c` (1,867,929 bytes). The independently exported Laika graph in the recorded toolchain is `f0696c16a6eb02099292176f25b47e4dc53863e7e4f3f7748e66470d54cf0173` (1,868,251 bytes); it is not byte-identical to the reference artifact, so Laika validates tensor outputs numerically rather than claiming artifact identity.
+
+The exporter passed three dynamic synthetic shapes and a real 5760 × 3840 CC0 photo resized explicitly to 1024 × 683 for comparison. For the photo, FP16 ONNX versus the pinned upstream PyTorch ARNet had maximum float error `0.000742674`, mean float error `0.0000915710`, 8-bit PSNR `63.63 dB`, maximum 8-bit channel error 1, and no channel errors greater than 2. The full multiscale renderer and CPU resource run are documented in the [BokehMe real-photo benchmark](benchmarks/bokeh-real-photo-2026-10-22.md). Highlight scatter and subject-protection stages remain separate work.
+
+Fetch the source checkpoint, then export outside the repository using the pinned toolchain:
+
+```bash
+python -m pip install -e '.[inference]'
+laika-models fetch bokehme-arnet-checkpoint
+git clone --filter=blob:none --no-checkout \
+  https://github.com/JuewenPeng/BokehMe.git /tmp/laika-bokehme
+git -C /tmp/laika-bokehme checkout 8b3ed556dc146207c9bb39fccd078a113f8d1bd8
+python3.11 -m venv /tmp/laika-bokeh-export-env
+/tmp/laika-bokeh-export-env/bin/pip install -r tools/bokeh_export_requirements.txt
+/tmp/laika-bokeh-export-env/bin/python -m pip install -e .
+/tmp/laika-bokeh-export-env/bin/python tools/export_bokeh_arnet.py \
+  --upstream-root /tmp/laika-bokehme \
+  --checkpoint ~/.cache/laika/models/bokehme-arnet.pth \
+  --output-dir /tmp/laika-bokeh-export \
+  --validation-photo /path/to/photo.jpg \
+  --validation-depth /path/to/depth.npy
+```
+
+The `laika bokeh` CLI takes the raw float32 map emitted by `laika depth`, normalizes it with the reference 2nd/98th percentiles, selects focus at normalized coordinates, and runs the reference thin-lens CoC and multiscale ARNet schedule. It keeps the input's oriented dimensions unless an explicit `--width` and `--height` are supplied; a requested smaller size uses bicubic RGB and align-corners depth resizing. The current output is the ARNet background plate, without final highlight or subject-protection compositing.
+
+```bash
+laika bokeh input.jpg depth.npy output.png \
+  --model /tmp/laika-bokeh-export/legendary-1.0-arnet.fp16.onnx \
+  --focus-x 0.5 --focus-y 0.5 --aperture 2.8 \
+  --strategy low-memory --threads 1
+
+# A smaller output is explicit and keeps its requested dimensions.
+laika bokeh input.jpg depth.npy preview.png \
+  --model /tmp/laika-bokeh-export/legendary-1.0-arnet.fp16.onnx \
+  --width 1024 --height 683 --focus-x 0.5 --focus-y 0.5
+```
+
+`low-memory` defaults to one CPU thread and disables ONNX Runtime's CPU arena/pattern. `balanced` enables runtime allocation reuse and defaults to at most four threads. Both use the same image math and preserve the specified output dimensions. The `BokehMeARNet` and `render_bokeh` APIs are available to Python callers.
+
 The Depth Anything V2 Small checkpoint's official model card identifies it as Apache-2.0; its file page records the checkpoint hash and byte size. The upstream model implementation is separately pinned to `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf`. The checkpoint has been strictly loaded and run on CPU. Static and dynamic ONNX exports have passed seeded-tensor checks; the dynamic graph was tested at four multiple-of-14 shapes. The Python adapter also produced a finite full-resolution map from a real 5760 × 3840 photo on CPU; this run verifies execution and resource use, not depth accuracy. See the [real-photo baseline](benchmarks/m4-depth-real-photo-2026-10-22.md), [M1 benchmark](benchmarks/m1-depth-anything-2026-10-21.md), and [dynamic-shape experiment](benchmarks/m1-dynamic-depth-2026-10-21.md).
 
 ```bash
 laika-models list
 laika-models fetch depth-anything-v2-small
 laika-models fetch sam2.1-hiera-tiny
+laika-models fetch bokehme-arnet-checkpoint
 laika-models verify depth-anything-v2-small \
   ~/.cache/laika/models/depth_anything_v2_vits.pth
 laika-models verify sam2.1-hiera-tiny \
   ~/.cache/laika/models/sam2.1_hiera_tiny.pt
+laika-models verify bokehme-arnet-checkpoint \
+  ~/.cache/laika/models/bokehme-arnet.pth
 ```
 
 Set `LAIKA_MODEL_CACHE` or pass `--cache-dir` to change the cache location. Downloads use a temporary file in the target directory and are atomically renamed only after validation. A mismatched existing file is reported and left untouched. Run `laika-models fetch` explicitly; installing Laika never downloads model weights.

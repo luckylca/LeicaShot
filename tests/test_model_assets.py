@@ -63,6 +63,24 @@ def test_manifest_pins_official_sam21_tiny_checkpoint_without_bundling() -> None
     assert not (Path(__file__).parents[1] / "models" / artifact.filename).exists()
 
 
+def test_manifest_pins_bokehme_arnet_source_checkpoint_without_bundling() -> None:
+    artifacts = load_manifest()
+    artifact = artifacts["bokehme-arnet-checkpoint"]
+    project_manifest = Path(__file__).parents[1] / "models" / "manifest.json"
+
+    assert project_manifest.read_bytes() == MANIFEST_PATH.read_bytes()
+    assert artifact.filename == "bokehme-arnet.pth"
+    assert artifact.expected_bytes == 11_101_736
+    assert (
+        artifact.sha256
+        == "6c7dba6f32e3afc8e984eb5adfecfea5d13b6f4ebd132a5a890beba384be4752"
+    )
+    assert artifact.source_revision == "8b3ed556dc146207c9bb39fccd078a113f8d1bd8"
+    assert artifact.source_code_revision == artifact.source_revision
+    assert "not asserted" in artifact.license
+    assert not (Path(__file__).parents[1] / "models" / artifact.filename).exists()
+
+
 def test_verified_download_is_atomic_and_reusable(tmp_path: Path) -> None:
     payload = b"model-bytes-for-test"
     artifact = _artifact(payload)

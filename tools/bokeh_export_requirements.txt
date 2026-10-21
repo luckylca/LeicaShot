@@ -1,0 +1,8 @@
+# Tested exporter toolchain, Python 3.11 CPU.
+torch==2.14.1
+numpy==2.4.6
+onnx==1.23.2
+onnxruntime==1.31.0
+onnxconverter-common==1.16.0
+Pillow==13.0.0
+opencv-python-headless==5.0.0.93

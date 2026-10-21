@@ -7,15 +7,26 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from laika.bokeh import (
+    APERTURES,
+    BokehInferenceError,
+    BokehMeARNet,
+    focus_at_point,
+    normalize_depth_map,
+    render_bokeh,
+    resize_rgb_cubic,
+)
 from laika.depth import (
     DepthAnythingV2Small,
     DepthInferenceError,
     depth_input_geometry,
+    resize_bilinear_align_corners,
 )
 from laika.engine import ImageInputError, ImageLimitError, ImageLimits, process_image
 from laika.m9 import M9ColorEngine, M9InferenceError
@@ -79,6 +90,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     color_parser.add_argument("--max-upload-bytes", type=int, default=50 * 1024 * 1024)
     color_parser.add_argument("--max-pixels", type=int, default=40_000_000)
+    bokeh_parser = subparsers.add_parser(
+        "bokeh",
+        help="render a depth-guided BokehMe ARNet background plate",
+    )
+    bokeh_parser.add_argument("input", help="input JPEG, PNG, or WebP")
+    bokeh_parser.add_argument("depth", help="raw float32 depth map from 'laika depth'")
+    bokeh_parser.add_argument("output", help="output .png path")
+    bokeh_parser.add_argument("--model", required=True, help="local ARNet ONNX path")
+    bokeh_parser.add_argument(
+        "--model-sha256",
+        help="explicit trusted SHA-256; otherwise require an export validation report",
+    )
+    bokeh_parser.add_argument("--focus-x", type=float, default=0.5)
+    bokeh_parser.add_argument("--focus-y", type=float, default=0.5)
+    bokeh_parser.add_argument("--aperture", type=float, choices=APERTURES, default=2.8)
+    bokeh_parser.add_argument(
+        "--strategy",
+        choices=("low-memory", "balanced"),
+        default="low-memory",
+    )
+    bokeh_parser.add_argument("--threads", type=int, default=None)
+    bokeh_parser.add_argument("--row-chunk-height", type=int, default=128)
+    bokeh_parser.add_argument(
+        "--width",
+        type=int,
+        help="explicit output width; requires --height and never upscales",
+    )
+    bokeh_parser.add_argument(
+        "--height",
+        type=int,
+        help="explicit output height; requires --width and never upscales",
+    )
+    bokeh_parser.add_argument("--max-upload-bytes", type=int, default=50 * 1024 * 1024)
+    bokeh_parser.add_argument("--max-pixels", type=int, default=40_000_000)
     return parser
 
 
@@ -176,6 +221,135 @@ def _save_depth(path: Path, depth: Any) -> None:
         raise
 
 
+def _read_depth_map(path: Path, *, max_pixels: int) -> Any:
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - optional runtime
+        raise BokehInferenceError(
+            "BokehMe inference requires NumPy; install the inference extra"
+        ) from exc
+    if not path.is_file():
+        raise ImageInputError("depth path is not a regular file")
+    try:
+        depth = np.load(path, mmap_mode="r", allow_pickle=False)
+    except (OSError, ValueError) as exc:
+        raise ImageInputError(
+            "depth file is not a valid non-pickled .npy array"
+        ) from exc
+    if (
+        not isinstance(depth, np.ndarray)
+        or depth.dtype != np.float32
+        or depth.ndim != 2
+        or min(depth.shape) < 1
+        or depth.size > max_pixels
+    ):
+        raise ImageLimitError("depth must be a float32 map within the pixel limit")
+    return depth
+
+
+def _save_rgb_png(path: Path, rgb: Any) -> int:
+    import numpy as np
+
+    output = np.asarray(rgb)
+    if output.dtype != np.uint8 or output.ndim != 3 or output.shape[2] != 3:
+        raise ValueError("render output must be an HWC uint8 RGB array")
+    if path.suffix.lower() != ".png":
+        raise ValueError("Bokeh output path must end in .png")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.stem}.", suffix=".tmp", dir=path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            with Image.fromarray(output, mode="RGB") as image:
+                image.save(stream, format="PNG")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return path.stat().st_size
+
+
+def _run_bokeh(args: argparse.Namespace) -> int:
+
+    input_path = Path(args.input)
+    depth_path = Path(args.depth)
+    output_path = Path(args.output)
+    if args.output in (args.input, args.depth) or any(
+        output_path.exists() and output_path.resolve() == p.resolve()
+        for p in (input_path, depth_path)
+    ):
+        raise ImageInputError("input, depth, and output paths must be different")
+    if (args.width is None) != (args.height is None):
+        raise ValueError("--width and --height must be supplied together")
+    if args.width is not None and (args.width < 2 or args.height < 2):
+        raise ValueError("explicit output dimensions must be at least two pixels")
+    if args.max_pixels < 1 or args.row_chunk_height < 1:
+        raise ValueError("pixel and row-chunk limits must be positive")
+
+    rgb = _read_rgb(
+        input_path,
+        max_bytes=args.max_upload_bytes,
+        max_pixels=args.max_pixels,
+    )
+    source_height, source_width = rgb.shape[:2]
+    raw_depth = _read_depth_map(depth_path, max_pixels=args.max_pixels)
+    started = time.perf_counter()
+    normalized_depth = normalize_depth_map(raw_depth)
+    del raw_depth
+    if normalized_depth.shape != (source_height, source_width):
+        normalized_depth = resize_bilinear_align_corners(
+            normalized_depth, source_height, source_width
+        )
+
+    if args.width is not None:
+        if args.width > source_width or args.height > source_height:
+            raise ValueError("explicit output dimensions cannot upscale the source")
+        rgb = resize_rgb_cubic(rgb, args.width, args.height)
+        normalized_depth = resize_bilinear_align_corners(
+            normalized_depth, args.height, args.width
+        )
+    focus = focus_at_point(normalized_depth, args.focus_x, args.focus_y)
+    with BokehMeARNet(
+        args.model,
+        strategy=args.strategy,
+        intra_op_num_threads=args.threads,
+        expected_sha256=args.model_sha256,
+    ) as model:
+        result = render_bokeh(
+            rgb,
+            normalized_depth,
+            focus,
+            args.aperture,
+            model,
+            row_chunk_height=args.row_chunk_height,
+        )
+        output_bytes = _save_rgb_png(output_path, result.rgb)
+        model_info = model.runtime_info.as_dict()
+    print(
+        json.dumps(
+            {
+                "output": str(output_path),
+                "output_bytes": output_bytes,
+                "width": result.width,
+                "height": result.height,
+                "focus": result.focus,
+                "aperture": result.aperture,
+                "scales": result.scales,
+                "model": model_info,
+                "stage_seconds": result.stage_seconds,
+                "total_seconds": time.perf_counter() - started,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
 def _run_depth(args: argparse.Namespace) -> int:
     input_path = Path(args.input)
     output_path = Path(args.output)
@@ -258,6 +432,17 @@ def main() -> int:
             return 2
         print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
         return 0
+    if args.command == "bokeh":
+        try:
+            return _run_bokeh(args)
+        except (
+            BokehInferenceError,
+            ImageInputError,
+            OSError,
+            ValueError,
+        ) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 2
     try:
         result = process_image(args.input, args.output)
     except (ImageInputError, OSError) as exc:

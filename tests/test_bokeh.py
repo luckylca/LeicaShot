@@ -1,0 +1,295 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import numpy as np
+import pytest
+
+from laika.bokeh import (
+    BOKEH_SOURCE_CHECKPOINT_SHA256,
+    BokehInferenceError,
+    BokehMeARNet,
+    focus_at_point,
+    full_frame_coc,
+    normalize_depth_map,
+    render_bokeh,
+    resize_rgb_cubic,
+)
+
+
+class FakeSession:
+    def __init__(self, *, input_names: tuple[str, str] = ("image", "defocus")) -> None:
+        self.inputs = [
+            SimpleNamespace(
+                name=input_names[0],
+                type="tensor(float)",
+                shape=[1, 3, "height", "width"],
+            ),
+            SimpleNamespace(
+                name=input_names[1],
+                type="tensor(float)",
+                shape=[1, 1, "height", "width"],
+            ),
+        ]
+        self.outputs = [
+            SimpleNamespace(
+                name="output",
+                type="tensor(float)",
+                shape=["batch", "channels", "height", "width"],
+            )
+        ]
+        self.calls: list[tuple[list[str], dict[str, np.ndarray]]] = []
+
+    def get_inputs(self) -> list[Any]:
+        return self.inputs
+
+    def get_outputs(self) -> list[Any]:
+        return self.outputs
+
+    def get_providers(self) -> list[str]:
+        return ["CPUExecutionProvider"]
+
+    def run(self, names: list[str], values: dict[str, np.ndarray]) -> list[np.ndarray]:
+        self.calls.append((names, values))
+        return [values["image"].copy() + np.float32(0.1)]
+
+
+def _install_fake_onnxruntime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            __version__="test",
+            SessionOptions=SimpleNamespace,
+            ExecutionMode=SimpleNamespace(ORT_SEQUENTIAL="sequential"),
+            GraphOptimizationLevel=SimpleNamespace(ORT_ENABLE_ALL="all"),
+        ),
+    )
+
+
+def _model_file(tmp_path: Path) -> tuple[Path, str]:
+    model = tmp_path / "arnet.onnx"
+    model.write_bytes(b"model fixture")
+    return model, hashlib.sha256(model.read_bytes()).hexdigest()
+
+
+def test_bokeh_adapter_preserves_rgb_and_defocus_tensor_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    session = FakeSession()
+    created: dict[str, Any] = {}
+
+    def factory(path: str, **kwargs: Any) -> FakeSession:
+        created.update(kwargs)
+        assert path == str(model)
+        return session
+
+    rgb = np.zeros((3, 5, 3), dtype=np.uint8)
+    rgb[:, :, 0] = 255
+    rgb[:, :, 1] = 128
+    defocus = np.linspace(-1, 1, 15, dtype=np.float32).reshape(3, 5)
+    with BokehMeARNet(
+        model,
+        expected_sha256=digest,
+        intra_op_num_threads=1,
+        session_factory=factory,
+    ) as engine:
+        prediction = engine.infer(rgb, defocus)
+
+    assert prediction.rgb_nchw.shape == (1, 3, 3, 5)
+    assert prediction.rgb_nchw.dtype == np.float32
+    assert prediction.rgb_nchw.flags.c_contiguous
+    assert session.calls[0][0] == ["output"]
+    values = session.calls[0][1]
+    np.testing.assert_allclose(
+        values["image"][0, :, 0, 0],
+        np.asarray([1.0, 128 / 255, 0.0], dtype=np.float32),
+        rtol=0,
+        atol=1e-7,
+    )
+    assert values["defocus"].shape == (1, 1, 3, 5)
+    np.testing.assert_array_equal(values["defocus"].reshape(3, 5), defocus)
+    np.testing.assert_allclose(prediction.rgb_nchw[:, 0], 1.0)
+    assert created["providers"] == ["CPUExecutionProvider"]
+    assert engine.runtime_info.provider == "CPUExecutionProvider"
+
+
+def test_bokeh_adapter_accepts_float_rgb_without_changing_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    session = FakeSession()
+    rgb = np.zeros((2, 3, 3), dtype=np.float32)
+    rgb[:, :, 2] = 0.75
+    with BokehMeARNet(
+        model,
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: session,
+    ) as engine:
+        prediction = engine.infer(rgb, np.zeros((2, 3), dtype=np.float32))
+
+    np.testing.assert_allclose(session.calls[0][1]["image"][0, 2], 0.75)
+    np.testing.assert_allclose(prediction.rgb_nchw[0, 2], 0.85, atol=1e-7)
+
+
+def test_depth_normalization_and_point_focus_match_reference_percentiles() -> None:
+    rows = np.linspace(0.0, 99.0, 100, dtype=np.float32)[:, None]
+    raw = np.broadcast_to(rows, (100, 100)).copy()
+    normalized = normalize_depth_map(raw)
+    assert normalized.dtype == np.float32
+    assert normalized.flags.c_contiguous
+    assert normalized.min() == 0.0
+    assert normalized.max() == 1.0
+    assert focus_at_point(normalized, 0.5, 0.5) == pytest.approx(
+        float(normalized[50, 50]), abs=1e-6
+    )
+
+    coc = full_frame_coc(normalized, 0.5, 2.8)
+    assert coc.shape == raw.shape
+    assert coc.dtype == np.float32
+    assert coc[0, 0] < 0 < coc[-1, -1]
+
+
+def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() -> None:
+    class DarkenModel:
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int]] = []
+
+        def infer(self, rgb: np.ndarray, defocus: np.ndarray) -> Any:
+            height, width = rgb.shape[:2]
+            self.calls.append((width, height))
+            assert defocus.shape == (height, width)
+            return SimpleNamespace(
+                rgb_nchw=np.zeros((1, 3, height, width), dtype=np.float32)
+            )
+
+    rgb = np.full((500, 700, 3), 180, dtype=np.uint8)
+    y = np.linspace(0.0, 1.0, 500, dtype=np.float32)[:, None]
+    depth = np.broadcast_to(y, (500, 700)).copy()
+    model = DarkenModel()
+    result = render_bokeh(rgb, depth, 0.5, 0.95, model, row_chunk_height=13)
+
+    assert result.rgb.shape == rgb.shape
+    assert result.rgb.dtype == np.uint8
+    assert result.scales[0] == 1.0
+    assert len(result.scales) == len(model.calls) >= 2
+    assert model.calls[0] == (700, 500)
+    assert np.all(result.rgb <= rgb)
+    assert np.any(result.rgb < rgb)
+    assert result.total_seconds >= 0
+    assert "optics" in result.stage_seconds
+    assert "composite" in result.stage_seconds
+
+
+def test_explicit_rgb_resize_uses_opencv_cubic_and_keeps_rgb_order() -> None:
+    import cv2
+
+    rgb = np.zeros((7, 11, 3), dtype=np.uint8)
+    rgb[:, :, 0] = np.arange(11, dtype=np.uint8)[None, :] * 17
+    rgb[:, :, 1] = np.arange(7, dtype=np.uint8)[:, None] * 23
+    rgb[:, :, 2] = 91
+    actual = resize_rgb_cubic(rgb, 5, 3)
+    expected = cv2.resize(rgb, (5, 3), interpolation=cv2.INTER_CUBIC)
+    np.testing.assert_array_equal(actual, expected)
+    assert actual.shape == (3, 5, 3)
+    assert actual.dtype == np.uint8
+    assert resize_rgb_cubic(rgb, 11, 7) is rgb
+
+
+def test_bokeh_adapter_rejects_wrong_hash_and_tensor_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+
+    def factory(*_args: Any, **_kwargs: Any) -> FakeSession:
+        return FakeSession()
+
+    with pytest.raises(BokehInferenceError, match="SHA-256 mismatch"):
+        BokehMeARNet(model, expected_sha256="0" * 64, session_factory=factory)
+    with pytest.raises(BokehInferenceError, match="inputs named"):
+        BokehMeARNet(
+            model,
+            expected_sha256=digest,
+            session_factory=lambda *_args, **_kwargs: FakeSession(
+                input_names=("bad", "defocus")
+            ),
+        )
+
+
+def test_bokeh_adapter_binds_onnx_hash_to_export_validation_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    Path(f"{model}.validation.json").write_text(
+        json.dumps(
+            {
+                "model_id": "bokehme-arnet-fp16",
+                "checkpoint_sha256": BOKEH_SOURCE_CHECKPOINT_SHA256,
+                "onnx_sha256": digest,
+                "dynamic_shapes": True,
+                "passed": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with BokehMeARNet(
+        model,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+    ) as engine:
+        assert engine.model_sha256 == digest
+
+    model.write_bytes(b"modified model")
+    with pytest.raises(BokehInferenceError, match="SHA-256 mismatch"):
+        BokehMeARNet(
+            model,
+            session_factory=lambda *_args, **_kwargs: FakeSession(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("image", "defocus", "message"),
+    [
+        (np.zeros((3, 5), dtype=np.uint8), np.zeros((3, 5), dtype=np.float32), "HWC"),
+        (
+            np.zeros((3, 5, 3), dtype=np.float32),
+            np.zeros((5, 3), dtype=np.float32),
+            "matching rgb",
+        ),
+        (
+            np.zeros((3, 5, 3), dtype=np.float32),
+            np.full((3, 5), 1.1, dtype=np.float32),
+            r"\[-1.0, 1.0\]",
+        ),
+        (
+            np.full((3, 5, 3), np.nan, dtype=np.float32),
+            np.zeros((3, 5), dtype=np.float32),
+            "finite",
+        ),
+    ],
+)
+def test_bokeh_adapter_rejects_invalid_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    image: np.ndarray,
+    defocus: np.ndarray,
+    message: str,
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    with BokehMeARNet(
+        model,
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+    ) as engine:
+        with pytest.raises(ValueError, match=message):
+            engine.infer(image, defocus)

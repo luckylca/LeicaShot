@@ -28,6 +28,20 @@
       "license": "Apache-2.0",
       "license_url": "https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/LICENSE",
       "status": "weights-pinned-awaiting-independent-export-validation"
+    },
+    {
+      "id": "bokehme-arnet-checkpoint",
+      "name": "BokehMe ARNet checkpoint",
+      "artifact": "bokehme-arnet.pth",
+      "format": "pytorch-state-dict-export-input",
+      "source_url": "https://raw.githubusercontent.com/JuewenPeng/BokehMe/8b3ed556dc146207c9bb39fccd078a113f8d1bd8/checkpoints/arnet.pth",
+      "source_revision": "8b3ed556dc146207c9bb39fccd078a113f8d1bd8",
+      "source_code_revision": "8b3ed556dc146207c9bb39fccd078a113f8d1bd8",
+      "expected_bytes": 11101736,
+      "sha256": "6c7dba6f32e3afc8e984eb5adfecfea5d13b6f4ebd132a5a890beba384be4752",
+      "license": "Project use authorized by user confirmation; public redistribution rights not asserted",
+      "license_url": "https://github.com/JuewenPeng/BokehMe/blob/8b3ed556dc146207c9bb39fccd078a113f8d1bd8/LICENSE",
+      "status": "weights-only-load-verified; dynamic-fp16-onnx-export-and-real-photo-cpu-parity-validated"
     }
   ]
 }

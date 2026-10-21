@@ -2,7 +2,7 @@
 
 ## Current status
 
-This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has a CPU depth adapter in `laika.depth` and a `laika depth` CLI command. The M9 series 3.0 epoch11 ONNX adapter in `laika.m9` now drives reference-style Lab detail fusion through the `laika color` CLI and Python engine. SAM 2.1 prompt preparation/selection and an experimental caller-supplied ViTMatte CPU/tile adapter are available. Neural bokeh, complete subject workflow, GAIC composition, HTTP tasks, and the unified full image pipeline remain in progress.
+This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has a CPU depth adapter in `laika.depth` and a `laika depth` CLI command. The M9 series 3.0 epoch11 ONNX adapter in `laika.m9` drives reference-style Lab detail fusion through the `laika color` CLI and Python engine. SAM 2.1 prompt preparation/selection and an experimental caller-supplied ViTMatte CPU/tile adapter are available. BokehMe ARNet now has a CPU ONNX adapter, reference-style multiscale renderer, and `laika bokeh` CLI command. Highlight rendering, complete subject workflow, GAIC composition, HTTP tasks, and the unified full image pipeline remain in progress. Android is used only for physical-device ADB comparison runs of the reference Kotlin engine; it is not in Laika's production processing architecture.
 
 ## Target boundaries
 
