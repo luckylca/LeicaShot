@@ -1,9 +1,9 @@
 """SAM 2.1 Tiny ONNX inference with bounded, reusable image embeddings.
 
-The adapter consumes the fixed-size, ImageNet-normalized RGB tensor used by the
-pinned SAM 2.1 image encoder export. Image resize and orientation remain the caller's
-responsibility so point-coordinate transforms stay explicit at the pipeline
-boundary.
+The input-preparation helper matches Laika's inspected reference contract: orient
+the source image first, resize it to a square with separable triangle antialiasing,
+then apply RGB ImageNet normalization. Prompt coordinates are normalized against
+the oriented source image before mapping into SAM's fixed 1024-pixel frame.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 SAM_IMAGE_SIZE = 1024
+SAM_ANALYSIS_LONG_EDGE = 2048
 SAM_MASK_SIZE = 256
 SAM_FEATURE_OUTPUTS = (
     "image_features_0",
@@ -34,6 +35,165 @@ SAM_FEATURE_SHAPES = (
     (1, 64, 128, 128),
     (1, 256, 64, 64),
 )
+_SAM_MEAN = (0.485, 0.456, 0.406)
+_SAM_STD = (0.229, 0.224, 0.225)
+_RESAMPLE_WORKING_BYTES = 4 * 1024 * 1024
+
+
+def _resample_plan(
+    input_size: int,
+    output_size: int,
+    start: int,
+    stop: int,
+) -> tuple[Any, Any]:
+    """Build a bounded triangle-antialias plan for an output-coordinate slice."""
+    import numpy as np
+
+    ratio = input_size / output_size
+    support = max(1.0, ratio)
+    positions = np.arange(start, stop, dtype=np.float64)
+    centers = (positions + 0.5) * ratio - 0.5
+    lows = np.maximum(0, np.ceil(centers - support).astype(np.int64))
+    highs = np.minimum(input_size - 1, np.floor(centers + support).astype(np.int64))
+    tap_count = int(np.max(highs - lows + 1))
+    indices = np.zeros((len(positions), tap_count), dtype=np.int64)
+    weights = np.zeros((len(positions), tap_count), dtype=np.float64)
+    for row, (center, low, high) in enumerate(zip(centers, lows, highs, strict=True)):
+        taps = np.arange(low, high + 1, dtype=np.int64)
+        tap_weights = np.maximum(0.0, 1.0 - np.abs(taps - center) / support)
+        tap_weights /= np.sum(tap_weights)
+        indices[row, : len(taps)] = taps
+        weights[row, : len(taps)] = tap_weights
+    return indices, weights
+
+
+def _resample_rgb_axis(
+    image: Any,
+    output_size: int,
+    *,
+    axis: int,
+    working_bytes: int = _RESAMPLE_WORKING_BYTES,
+) -> Any:
+    """Resize HWC float RGB with the reference's separable triangle filter."""
+    import numpy as np
+
+    if axis == 1:
+        input_size = image.shape[1]
+        ratio = input_size / output_size
+        max_taps = max(1, int(np.ceil(2.0 * max(1.0, ratio))) + 1)
+        pixels_per_chunk = max(
+            1, working_bytes // (max_taps * 3 * np.dtype(np.float64).itemsize)
+        )
+        output = np.empty((image.shape[0], output_size, 3), dtype=np.float32)
+        for start in range(0, output_size, pixels_per_chunk):
+            stop = min(output_size, start + pixels_per_chunk)
+            indices, weights = _resample_plan(input_size, output_size, start, stop)
+            for y in range(image.shape[0]):
+                samples = image[y, indices, :]
+                if samples.dtype == np.uint8:
+                    samples = samples.astype(np.float32) / np.float32(255.0)
+                samples = samples.astype(np.float64, copy=False)
+                output[y, start:stop, :] = np.einsum(
+                    "ot,otc->oc", weights, samples, optimize=False
+                )
+        return output
+
+    if axis == 0:
+        input_size = image.shape[0]
+        ratio = input_size / output_size
+        max_taps = max(1, int(np.ceil(2.0 * max(1.0, ratio))) + 1)
+        pixels_per_chunk = max(
+            1, working_bytes // (max_taps * 3 * np.dtype(np.float64).itemsize)
+        )
+        output = np.empty((output_size, image.shape[1], 3), dtype=np.float32)
+        for y in range(output_size):
+            indices, weights = _resample_plan(input_size, output_size, y, y + 1)
+            row_indices = indices[0]
+            row_weights = weights[0]
+            active = row_weights > 0
+            row_indices = row_indices[active]
+            row_weights = row_weights[active]
+            for start in range(0, image.shape[1], pixels_per_chunk):
+                stop = min(image.shape[1], start + pixels_per_chunk)
+                samples = image[row_indices, start:stop, :].astype(
+                    np.float64, copy=False
+                )
+                output[y, start:stop, :] = np.einsum(
+                    "t,twc->wc", row_weights, samples, optimize=False
+                )
+        return output
+
+    raise ValueError("axis must be 0 (vertical) or 1 (horizontal)")
+
+
+def _prepare_sam_rgb(rgb_image: Any, output_size: int) -> Any:
+    """Resize HWC RGB and return a normalized NCHW model tensor."""
+    import numpy as np
+
+    if not isinstance(rgb_image, np.ndarray):
+        raise ValueError("rgb_image must be a NumPy RGB array")
+    if (
+        rgb_image.ndim != 3
+        or rgb_image.shape[2] != 3
+        or rgb_image.shape[0] < 1
+        or rgb_image.shape[1] < 1
+    ):
+        raise ValueError("rgb_image must have shape [height, width, 3]")
+    if max(rgb_image.shape[:2]) > SAM_ANALYSIS_LONG_EDGE:
+        raise ValueError(
+            "rgb_image must be the subject-analysis raster with a long edge "
+            "at most 2048"
+        )
+    if not rgb_image.flags.c_contiguous:
+        raise ValueError("rgb_image must be C-contiguous to avoid a hidden copy")
+    if rgb_image.dtype not in (np.uint8, np.float32):
+        raise ValueError("rgb_image must use uint8 or float32 RGB values")
+    if rgb_image.dtype == np.float32 and (
+        not np.isfinite(rgb_image).all()
+        or float(np.min(rgb_image)) < 0.0
+        or float(np.max(rgb_image)) > 1.0
+    ):
+        raise ValueError("float32 rgb_image values must be finite and in [0, 1]")
+
+    horizontal = _resample_rgb_axis(rgb_image, output_size, axis=1)
+    resized = _resample_rgb_axis(horizontal, output_size, axis=0)
+    tensor = np.ascontiguousarray(resized.transpose(2, 0, 1)[None, ...])
+    for channel, (mean, std) in enumerate(zip(_SAM_MEAN, _SAM_STD, strict=True)):
+        np.subtract(tensor[0, channel], np.float32(mean), out=tensor[0, channel])
+        np.divide(tensor[0, channel], np.float32(std), out=tensor[0, channel])
+    return tensor
+
+
+def prepare_sam_input(rgb_image: Any) -> Any:
+    """Prepare an oriented RGB image for SAM as contiguous float32 NCHW.
+
+    ``rgb_image`` is the subject-analysis HWC RGB raster (long edge at most 2048),
+    in `uint8` or `float32` [0, 1]. Apply EXIF orientation and any explicit
+    subject-analysis resize before calling this function. The separable triangle filter
+    performs antialiasing during both downsampling and upsampling and follows the
+    reference's width-to-1024 pass followed by its height-to-1024 pass.
+    """
+    return _prepare_sam_rgb(rgb_image, SAM_IMAGE_SIZE)
+
+
+def normalized_points_to_sam(point_coords: Any) -> Any:
+    """Map oriented-image normalized ``(x, y)`` prompts into SAM's pixel frame."""
+    import numpy as np
+
+    coords = np.asarray(point_coords, dtype=np.float32)
+    if coords.ndim == 2:
+        coords = coords[None, ...]
+    if coords.ndim != 3 or coords.shape[0] != 1 or coords.shape[2] != 2:
+        raise ValueError("point_coords must have shape [P, 2] or [1, P, 2]")
+    if coords.shape[1] < 1:
+        raise ValueError("point_coords must contain at least one point")
+    if not np.isfinite(coords).all():
+        raise ValueError(
+            "normalized prompt coordinates must be finite and lie in [0, 1)"
+        )
+    if np.any(coords < 0.0) or np.any(coords >= 1.0):
+        raise ValueError("normalized prompt coordinates must lie in [0, 1)")
+    return np.ascontiguousarray(coords * np.float32(SAM_IMAGE_SIZE))
 
 
 class SubjectInferenceError(RuntimeError):

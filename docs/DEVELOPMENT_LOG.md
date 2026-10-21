@@ -84,3 +84,9 @@
 - Added a fresh-worker benchmark for RSS/USS, CPU time, encoder/decoder latency, and cache reuse. Three Docker workers with swap disabled and a 2 GiB cgroup cap all completed; median cgroup peak was 1,106,763,776 B (1,055.5 MiB), with zero OOM events. Median cold encoder time was 3.351 s and median cached prompt wall time was 0.135 s. This is a synthetic-input SAM-stage result, not a full-pipeline minimum-memory claim; details and environment are in the [SAM cgroup report](benchmarks/m1-sam2-cgroup-2026-10-21.md).
 - Added mock-session coverage for cache hits, byte-budget eviction, lifecycle cleanup, prompt validation, and tensor shape checks. Added a labeled GitHub Actions model-smoke job that verifies the pinned checkpoint, exports and compares split ONNX graphs, then repeats the 2 GiB measurement.
 - Added the checkpoint to the external asset manifest. Its weights remain outside Git; the reference project's converted ONNX is not copied or used as a Laika validation artifact.
+
+## 2026-10-21 — SAM reference input preparation
+
+- Added subject-analysis HWC RGB `uint8` / `[0,1]` `float32` preprocessing (long edge ≤2048) with bounded temporary chunks, separable triangle antialiasing, the reference's width-then-height square resize, and RGB ImageNet normalization. EXIF orientation and explicit analysis resizing remain caller responsibilities.
+- Added mapping for normalized points in the oriented source image to SAM's fixed 1024 coordinate frame; preprocessing preserves the reference's coordinate scaling even when the source aspect ratio is stretched to square.
+- Added scalar numerical fixtures for the resampling kernel, output shape/dtype/layout checks, byte-image normalization, and prompt boundary validation. Local Ruff and all 49 tests pass. The SAM model benchmark now includes 2048×1536 RGB preprocessing; its new cgroup and latency results are pending the PR model-smoke run.
