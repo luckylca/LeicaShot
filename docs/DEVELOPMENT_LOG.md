@@ -26,3 +26,10 @@
 - Dynamic DPT adapter output matched the pinned PyTorch model exactly on all four synthetic shapes. ONNX maximum absolute error was `1.67e-5` at most; all result shapes matched inputs and contained finite values.
 - A one-warmup, one-run 1400×518 comparison measured PyTorch 1,487,093,760 bytes peak RSS / 4.125 s inference and ONNX Runtime 1,270,792,192 bytes / 6.976 s. This is 14.6% lower sampled RSS and 1.69× slower ONNX on this single M1 case.
 - The dynamic graph uses opset 17 and embeds its weights. The future engine must reject dimensions below 518 or not divisible by 14. No dynamic photo quality, Linux cgroup test, query-chunked graph, or full pipeline result exists yet. See [the dynamic export report](benchmarks/m1-dynamic-depth-2026-10-21.md).
+
+## 2026-10-21 — global query chunking for Depth Anything V2
+
+- Added an opt-in TorchScript query loop to the dynamic exporter. Every query chunk still reads every key and value; the exported graph is rejected unless all 12 attention blocks preserve ONNX Loop nodes.
+- Tested 32, 64, and 128 query tiles against unmodified PyTorch attention on seeded 518×518, 700×532, and 1400×518 inputs. PyTorch output maximum absolute difference was zero for all sizes. ONNX parity maximum absolute error was at most `1.67e-5` (limit `1e-4`).
+- On the M1 at 1400×518, process-tree RSS fell from 1,642,561,536 bytes to 656,801,792 / 639,533,056 / 638,566,400 bytes for chunks 32 / 64 / 128. Median CPU inference rose from 6.560 s to 7.734 / 7.152 / 6.794 s. Chunk 128 is the best measured tradeoff; this is a single-machine result with no cgroup or USS data.
+- See [query-chunking benchmark](benchmarks/m1-depth-query-chunking-2026-10-21.md). The exporter experiment is not yet integrated into the production image engine. No real-photo or full-pipeline quality/memory result exists.
