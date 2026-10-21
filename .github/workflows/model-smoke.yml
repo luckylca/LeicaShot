@@ -93,3 +93,9 @@ jobs:
           python scripts/benchmark_depth_inference.py \
             --model "$RUNNER_TEMP/depth-anything-v2-small-dynamic-q128.onnx" \
             --width 1400 --height 518 --threads 1
+          python scripts/benchmark_depth_inference.py \
+            --model "$RUNNER_TEMP/depth-anything-v2-small-dynamic.onnx" \
+            --width 3840 --height 2160 --threads 1
+          python scripts/benchmark_depth_inference.py \
+            --model "$RUNNER_TEMP/depth-anything-v2-small-dynamic-q128.onnx" \
+            --width 3840 --height 2160 --threads 1
