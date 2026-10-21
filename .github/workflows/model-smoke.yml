@@ -122,6 +122,12 @@ jobs:
               raise SystemExit("benchmark must include the 2048x1536 RGB preparation path")
           if not isinstance(benchmark.get("preprocessing_seconds"), (int, float)):
               raise SystemExit("RGB-to-SAM preprocessing time is missing")
+          if benchmark.get("synthetic_selected_mask_shape") != [1536, 2048]:
+              raise SystemExit("analysis-resolution mask restoration is missing")
+          if benchmark.get("synthetic_selected_candidate_index") != 1:
+              raise SystemExit("prompt-aware synthetic mask selection failed")
+          if not isinstance(benchmark.get("synthetic_mask_selection_seconds"), (int, float)):
+              raise SystemExit("mask selection and restoration time is missing")
           if benchmark.get("cache_used_bytes") != 16777216:
               raise SystemExit("expected 16 MiB of reusable image features")
           if len(benchmark.get("warm_prompt_runs", [])) != 3:
@@ -132,6 +138,7 @@ jobs:
               "process_tree_peak_rss_bytes": report.get("process_tree_peak_rss_bytes"),
               "process_tree_peak_uss_bytes": report.get("process_tree_peak_uss_bytes"),
               "preprocessing_seconds": benchmark.get("preprocessing_seconds"),
+              "synthetic_mask_selection_seconds": benchmark.get("synthetic_mask_selection_seconds"),
               "cold_encoder_seconds": benchmark.get("cold_encoder_seconds"),
               "warm_prompt_runs": benchmark.get("warm_prompt_runs"),
           }, sort_keys=True))

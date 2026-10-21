@@ -13,8 +13,10 @@ from laika.subject import (
     ImageEmbeddingCache,
     Sam2TinyOnnx,
     _prepare_sam_rgb,
+    _resize_mask_bilinear,
     normalized_points_to_sam,
     prepare_sam_input,
+    select_subject_mask,
 )
 
 
@@ -158,6 +160,103 @@ def test_normalized_prompt_coordinates_map_to_model_frame() -> None:
 def test_normalized_prompt_coordinates_reject_out_of_range_values(coords) -> None:
     with pytest.raises(ValueError, match="normalized prompt coordinates"):
         normalized_points_to_sam(coords)
+
+
+def test_mask_selection_uses_highest_scoring_candidate_covering_prompt() -> None:
+    logits = np.full((1, 3, 256, 256), -1.0, dtype=np.float32)
+    logits[0, 1] = 1.0
+    logits[0, 2] = 1.0
+    scores = np.asarray([[0.99, 0.8, 0.9]], dtype=np.float32)
+
+    selected = select_subject_mask(logits, scores, [0.5, 0.5], 64, 48)
+
+    assert selected.candidate_index == 2
+    assert selected.score == pytest.approx(0.9)
+    assert selected.mask.shape == (48, 64)
+    assert selected.mask.dtype == np.float32
+    assert set(np.unique(selected.mask)) == {1.0}
+    assert logits[0, 2, 0, 0] == 1.0
+
+
+def test_mask_resize_matches_reference_half_pixel_bilinear() -> None:
+    low_res = np.random.default_rng(13).normal(size=(256, 256)).astype(np.float32)
+    expected = np.empty((11, 17), dtype=np.float32)
+    for y in range(expected.shape[0]):
+        source_y = np.float32(y + 0.5) * np.float32(256) / np.float32(11) - np.float32(
+            0.5
+        )
+        iy = int(np.floor(source_y))
+        fy = source_y - iy
+        for x in range(expected.shape[1]):
+            source_x = np.float32(x + 0.5) * np.float32(256) / np.float32(
+                17
+            ) - np.float32(0.5)
+            ix = int(np.floor(source_x))
+            fx = source_x - ix
+            value = np.float32(0.0)
+            for dy in range(2):
+                py = min(max(iy + dy, 0), 255)
+                wy = np.float32(1.0) - fy if dy == 0 else fy
+                for dx in range(2):
+                    px = min(max(ix + dx, 0), 255)
+                    wx = np.float32(1.0) - fx if dx == 0 else fx
+                    value += low_res[py, px] * wy * wx
+            expected[y, x] = value
+
+    actual = _resize_mask_bilinear(low_res, 17, 11)
+
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=2e-7)
+
+
+def test_mask_selection_fails_when_no_candidate_covers_prompt() -> None:
+    logits = np.full((1, 3, 256, 256), -1.0, dtype=np.float32)
+
+    with pytest.raises(ValueError, match="no SAM candidate"):
+        select_subject_mask(logits, np.zeros(3, dtype=np.float32), [0.5, 0.5], 64, 48)
+
+
+@pytest.mark.parametrize(
+    ("logits", "scores", "point", "width", "height", "message"),
+    [
+        (
+            np.zeros((3, 256, 256), dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+            [0.5, 0.5],
+            64,
+            48,
+            "mask_logits",
+        ),
+        (
+            np.zeros((1, 3, 256, 256), dtype=np.float32),
+            np.zeros(3, dtype=np.float64),
+            [0.5, 0.5],
+            64,
+            48,
+            "float32",
+        ),
+        (
+            np.zeros((1, 3, 256, 256), dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+            [1.0, 0.5],
+            64,
+            48,
+            "normalized range",
+        ),
+        (
+            np.zeros((1, 3, 256, 256), dtype=np.float32),
+            np.zeros(3, dtype=np.float32),
+            [0.5, 0.5],
+            2049,
+            48,
+            "2048-pixel budget",
+        ),
+    ],
+)
+def test_mask_selection_rejects_invalid_inputs(
+    logits, scores, point, width, height, message
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        select_subject_mask(logits, scores, point, width, height)
 
 
 def test_reuses_image_features_for_repeated_prompts() -> None:

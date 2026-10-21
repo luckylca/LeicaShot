@@ -211,6 +211,136 @@ class SubjectPrediction:
     cache_hit: bool
 
 
+@dataclass(frozen=True)
+class SelectedSubjectMask:
+    """Binary subject mask restored to the analysis raster dimensions."""
+
+    mask: Any
+    candidate_index: int
+    score: float
+
+
+def _sample_low_res_mask(mask: Any, point_xy: Any, width: int, height: int) -> Any:
+    """Match the reference's half-pixel bilinear sampling at the clicked pixel."""
+    import numpy as np
+
+    point_x = min(int(float(point_xy[0]) * width), width - 1)
+    point_y = min(int(float(point_xy[1]) * height), height - 1)
+    source_x = (np.float32(point_x) + np.float32(0.5)) * np.float32(
+        mask.shape[1]
+    ) / np.float32(width) - np.float32(0.5)
+    source_y = (np.float32(point_y) + np.float32(0.5)) * np.float32(
+        mask.shape[0]
+    ) / np.float32(height) - np.float32(0.5)
+    ix, iy = int(np.floor(source_x)), int(np.floor(source_y))
+    fx, fy = source_x - ix, source_y - iy
+    value = np.float32(0.0)
+    for dy in range(2):
+        y = min(max(iy + dy, 0), mask.shape[0] - 1)
+        wy = np.float32(1.0) - fy if dy == 0 else fy
+        for dx in range(2):
+            x = min(max(ix + dx, 0), mask.shape[1] - 1)
+            wx = np.float32(1.0) - fx if dx == 0 else fx
+            value += mask[y, x] * wy * wx
+    return value
+
+
+def _resize_mask_bilinear(mask: Any, width: int, height: int) -> Any:
+    """Resize one mask using half-pixel bilinear sampling in bounded row bands."""
+    import numpy as np
+
+    input_height, input_width = mask.shape
+    output = np.empty((height, width), dtype=np.float32)
+    source_x = (np.arange(width, dtype=np.float32) + np.float32(0.5)) * np.float32(
+        input_width
+    ) / np.float32(width) - np.float32(0.5)
+    ix = np.floor(source_x).astype(np.int64)
+    fx = source_x - ix.astype(np.float32)
+    x0 = np.clip(ix, 0, input_width - 1)
+    x1 = np.clip(ix + 1, 0, input_width - 1)
+    wx0, wx1 = np.float32(1.0) - fx, fx
+    chunk_height = max(1, min(64, height))
+
+    for start in range(0, height, chunk_height):
+        stop = min(height, start + chunk_height)
+        source_y = (
+            np.arange(start, stop, dtype=np.float32) + np.float32(0.5)
+        ) * np.float32(input_height) / np.float32(height) - np.float32(0.5)
+        iy = np.floor(source_y).astype(np.int64)
+        fy = source_y - iy.astype(np.float32)
+        y0 = np.clip(iy, 0, input_height - 1)
+        y1 = np.clip(iy + 1, 0, input_height - 1)
+        wy0, wy1 = (np.float32(1.0) - fy)[:, None], fy[:, None]
+
+        values = mask[y0[:, None], x0[None, :]] * wy0
+        values *= wx0[None, :]
+        values += mask[y0[:, None], x1[None, :]] * wy0 * wx1[None, :]
+        values += mask[y1[:, None], x0[None, :]] * wy1 * wx0[None, :]
+        values += mask[y1[:, None], x1[None, :]] * wy1 * wx1[None, :]
+        output[start:stop] = values
+    return output
+
+
+def select_subject_mask(
+    mask_logits: Any,
+    scores: Any,
+    point_xy: Any,
+    width: int,
+    height: int,
+) -> SelectedSubjectMask:
+    """Choose the highest-score SAM candidate covering a positive prompt.
+
+    The candidate's low-resolution logits are bilinearly sampled at the clicked
+    pixel, then resized to the subject-analysis raster and thresholded at zero,
+    matching the inspected reference behavior.
+    """
+    import numpy as np
+
+    logits = np.asarray(mask_logits)
+    candidates = np.asarray(scores)
+    if logits.shape != (1, 3, SAM_MASK_SIZE, SAM_MASK_SIZE):
+        raise ValueError("mask_logits must have shape [1, 3, 256, 256]")
+    if candidates.shape not in ((1, 3), (3,)):
+        raise ValueError("scores must have shape [3] or [1, 3]")
+    if logits.dtype != np.float32 or candidates.dtype != np.float32:
+        raise ValueError("SAM mask logits and scores must be float32")
+    if not np.isfinite(logits).all() or not np.isfinite(candidates).all():
+        raise ValueError("SAM mask logits and scores must be finite")
+    if (
+        isinstance(width, bool)
+        or isinstance(height, bool)
+        or not isinstance(width, (int, np.integer))
+        or not isinstance(height, (int, np.integer))
+        or width < 1
+        or height < 1
+        or max(width, height) > SAM_ANALYSIS_LONG_EDGE
+    ):
+        raise ValueError("analysis dimensions must be within the 2048-pixel budget")
+    normalized = np.asarray(point_xy, dtype=np.float32)
+    if normalized.shape != (2,) or not np.isfinite(normalized).all():
+        raise ValueError("point_xy must contain one finite normalized (x, y) point")
+    if np.any(normalized < 0.0) or np.any(normalized >= 1.0):
+        raise ValueError("point_xy must lie in the normalized range [0, 1)")
+
+    ordered_candidates = np.argsort(-candidates.reshape(3), kind="stable")
+    for candidate_index in ordered_candidates:
+        low_res = logits[0, candidate_index]
+        if _sample_low_res_mask(low_res, normalized, width, height) <= 0.0:
+            continue
+        resized = _resize_mask_bilinear(low_res, width, height)
+        np.greater(resized, np.float32(0.0), out=resized)
+        point_x = min(int(float(normalized[0]) * width), width - 1)
+        point_y = min(int(float(normalized[1]) * height), height - 1)
+        if resized[point_y, point_x] != 1.0:
+            raise ValueError("resized SAM mask does not cover the positive prompt")
+        return SelectedSubjectMask(
+            mask=resized,
+            candidate_index=int(candidate_index),
+            score=float(candidates.reshape(3)[candidate_index]),
+        )
+    raise ValueError("no SAM candidate contains the positive prompt")
+
+
 class ImageEmbeddingCache:
     """Byte-bounded LRU cache for immutable SAM image encoder outputs."""
 
