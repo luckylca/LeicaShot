@@ -31,6 +31,7 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         Sam2TinyOnnx,
         normalized_points_to_sam,
         prepare_sam_input,
+        select_subject_mask,
     )
 
     report_path = args.validation_report.resolve()
@@ -54,6 +55,10 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
     )
     coords = normalized_points_to_sam(normalized_coords)
     labels = np.asarray([[1, 0]], dtype=np.int32)
+    synthetic_logits = np.full((1, 3, 256, 256), -1.0, dtype=np.float32)
+    yy, xx = np.ogrid[:256, :256]
+    synthetic_logits[0, 1, (xx - 128) ** 2 + (yy - 128) ** 2 <= 48**2] = 1.0
+    synthetic_scores = np.asarray([[0.7, 0.9, 0.8]], dtype=np.float32)
 
     with Sam2TinyOnnx(
         encoder_path,
@@ -86,6 +91,16 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         if cold.cache_hit or cold.mask_logits.shape != (1, 3, 256, 256):
             raise RuntimeError("cold SAM inference returned an invalid result")
 
+    mask_started = time.perf_counter()
+    selected_mask = select_subject_mask(
+        synthetic_logits,
+        synthetic_scores,
+        [0.5, 0.5],
+        width=2048,
+        height=1536,
+    )
+    mask_selection_seconds = time.perf_counter() - mask_started
+
     return {
         "model_id": validation["model_id"],
         "checkpoint_sha256": validation["checkpoint_sha256"],
@@ -103,6 +118,9 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         "preprocessing_seconds": preprocessing_seconds,
         "point_count": int(coords.shape[1]),
         "mask_shape": list(cold.mask_logits.shape),
+        "synthetic_mask_selection_seconds": mask_selection_seconds,
+        "synthetic_selected_candidate_index": selected_mask.candidate_index,
+        "synthetic_selected_mask_shape": list(selected_mask.mask.shape),
         "cold_encoder_seconds": cold.encoder_seconds,
         "cold_decoder_seconds": cold.decoder_seconds,
         "cold_predict_wall_seconds": cold_total_seconds,
