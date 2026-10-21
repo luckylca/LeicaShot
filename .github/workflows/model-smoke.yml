@@ -150,7 +150,7 @@ jobs:
             else
               expected_limit=2147483648
             fi
-            for graph in dynamic dynamic-q128; do
+            for graph in dynamic dynamic-q16 dynamic-q32 dynamic-q64 dynamic-q128; do
               for trial in 1 2 3; do
                 report="$RUNNER_TEMP/laika-depth-cgroup-reports/${budget}-${graph}-trial${trial}.json"
                 docker run --rm \
