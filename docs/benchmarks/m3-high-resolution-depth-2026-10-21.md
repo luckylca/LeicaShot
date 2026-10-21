@@ -59,7 +59,17 @@ PYTHONPATH=src python scripts/benchmark_depth_inference.py \
 
 The opt-in `model-smoke` GitHub Actions workflow also runs these two worker
 measurements on Linux, so future changes can be compared on the same runner
-class.
+class. Its first 4K run (Ubuntu 24.04 x86_64, Python 3.11.17, NumPy 2.4.6,
+ONNX Runtime 1.31.0, OpenCV 5.0.0.93, one thread) returned full-size finite
+maps for both graphs. One fresh worker per graph measured:
+
+| Graph | Peak RSS | Inference | Worker wall |
+| --- | ---: | ---: | ---: |
+| Full attention | 731,766,784 B (697.9 MiB) | 3.454 s | 4.491 s |
+| Query chunk 128 | 556,109,824 B (530.3 MiB) | 3.484 s | 4.519 s |
+
+The cgroup v2 limit was `max`; this single pair showed 24.0% lower q128 RSS,
+with similar timing. It is not a constrained-memory comparison.
 
 ## Limits
 
