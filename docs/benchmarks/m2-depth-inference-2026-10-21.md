@@ -41,6 +41,24 @@ across CPU architectures. The cross-platform preprocessing tolerance is now
 `2e-4`; the final depth output limit remains `1e-4`. The Linux depth output
 remained inside that unchanged limit.
 
+## Linux model-smoke worker sample
+
+The opt-in GitHub Actions run also measured one fresh CLI worker for each graph
+on Linux x86_64 (Ubuntu 24.04, Python 3.11.17, NumPy 2.4.6, ONNX Runtime
+1.31.0, OpenCV 5.0.0.93, one thread). The runner sampled process-tree RSS/USS
+every 5 ms on the seeded 1400×518 input; cgroup v2 was visible, but
+`memory.max` was `max`.
+
+| Graph | Peak worker RSS | Peak worker USS | Inference | Adapter total | Worker wall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Full attention baseline | 1,114,427,392 B (1,062.4 MiB) | 1,070,276,608 B (1,020.8 MiB) | 6.932 s | 6.943 s | 7.771 s |
+| Query chunk 128 | 622,305,280 B (593.3 MiB) | 578,101,248 B (551.2 MiB) | 7.095 s | 7.099 s | 7.892 s |
+
+This single paired sample had 44.2% lower peak RSS for q128 and about 1.6%
+longer worker wall time. It is a smoke measurement, not a repeated performance
+comparison, and the cgroup was not memory constrained. These results do not
+demonstrate the 4 GiB or 2 GiB full-pipeline target.
+
 ## Full CLI worker measurements
 
 Three fresh worker trials per graph were measured on an 8 GiB MacBook Air M1
