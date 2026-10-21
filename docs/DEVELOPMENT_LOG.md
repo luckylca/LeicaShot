@@ -1,5 +1,10 @@
 # Development log
 
+## 2026-10-22 — Depth Anything V2 real-photo CPU smoke
+
+- Ran the pinned dynamic CPU ONNX adapter on the CC0 5760×3840 mountains photo. It used a 1220×813 analysis raster, a 1232×826 padded network tensor, and exported a finite float32 map at the original 5760×3840 size.
+- Model inference took 13.915 s and the full engine path took 14.402 s. macOS `/usr/bin/time -l` reported 1,695,547,392 B process high-water RSS. This is one unconstrained depth-only photo run, not an accuracy comparison or a complete-pipeline 4/2 GiB result; see the [real-photo report](benchmarks/m4-depth-real-photo-2026-10-22.md).
+
 ## 2026-10-21 — repository bootstrap and M0 baseline
 
 - Inspected the empty worktree and the empty public `luckylca/LeicaShot` repository; created the independent Laika history there without forking or configuring the reference as a remote.
