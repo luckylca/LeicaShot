@@ -27,7 +27,11 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
     import numpy as np
     import onnxruntime as ort
 
-    from laika.subject import Sam2TinyOnnx
+    from laika.subject import (
+        Sam2TinyOnnx,
+        normalized_points_to_sam,
+        prepare_sam_input,
+    )
 
     report_path = args.validation_report.resolve()
     validation = json.loads(report_path.read_text(encoding="utf-8"))
@@ -41,14 +45,14 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("image decoder does not match its validation report")
 
     rng = np.random.default_rng(args.seed)
-    rgb = rng.integers(0, 256, (1, 3, 1024, 1024), dtype=np.uint8)
-    image = rgb.astype(np.float32)
-    image /= np.float32(255.0)
-    mean = np.asarray([0.485, 0.456, 0.406], dtype=np.float32)[None, :, None, None]
-    std = np.asarray([0.229, 0.224, 0.225], dtype=np.float32)[None, :, None, None]
-    image -= mean
-    image /= std
-    coords = np.asarray([[[320.0, 420.0], [610.0, 380.0]]], dtype=np.float32)
+    rgb = rng.integers(0, 256, (1536, 2048, 3), dtype=np.uint8)
+    preprocess_started = time.perf_counter()
+    image = prepare_sam_input(rgb)
+    preprocessing_seconds = time.perf_counter() - preprocess_started
+    normalized_coords = np.asarray(
+        [[0.3125, 0.41015625], [0.595703125, 0.37109375]], dtype=np.float32
+    )
+    coords = normalized_points_to_sam(normalized_coords)
     labels = np.asarray([[1, 0]], dtype=np.int32)
 
     with Sam2TinyOnnx(
@@ -94,7 +98,9 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         "provider": "CPUExecutionProvider",
         "threads": args.threads,
         "seed": args.seed,
+        "source_rgb_shape": list(rgb.shape),
         "input_shape": list(image.shape),
+        "preprocessing_seconds": preprocessing_seconds,
         "point_count": int(coords.shape[1]),
         "mask_shape": list(cold.mask_logits.shape),
         "cold_encoder_seconds": cold.encoder_seconds,
@@ -105,7 +111,7 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         "cache_used_bytes": cache_bytes,
         "cache_hits": cache_hits,
         "cache_entries_after_close": engine.cache.entry_count,
-        "quality_status": "synthetic-tensor-only",
+        "quality_status": "synthetic-image-only",
     }
 
 

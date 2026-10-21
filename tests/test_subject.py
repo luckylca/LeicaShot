@@ -12,6 +12,9 @@ from laika.subject import (
     SAM_FEATURE_SHAPES,
     ImageEmbeddingCache,
     Sam2TinyOnnx,
+    _prepare_sam_rgb,
+    normalized_points_to_sam,
+    prepare_sam_input,
 )
 
 
@@ -71,6 +74,90 @@ def make_engine(cache_max_bytes: int = 32 * 1024 * 1024):
 
 def image_tensor(value: float = 0.0) -> np.ndarray:
     return np.full((1, 3, 1024, 1024), value, dtype=np.float32)
+
+
+def scalar_reference_axis(image: np.ndarray, output_size: int, axis: int) -> np.ndarray:
+    input_size = image.shape[axis]
+    ratio = input_size / output_size
+    support = max(1.0, ratio)
+    output_shape = list(image.shape)
+    output_shape[axis] = output_size
+    output = np.empty(output_shape, dtype=np.float32)
+    for target in range(output_size):
+        center = (target + 0.5) * ratio - 0.5
+        low = max(0, int(np.ceil(center - support)))
+        high = min(input_size - 1, int(np.floor(center + support)))
+        taps = np.arange(low, high + 1)
+        weights = np.maximum(0.0, 1.0 - np.abs(taps - center) / support)
+        weights /= np.sum(weights)
+        selected = np.take(image, taps, axis=axis).astype(np.float64)
+        weight_shape = [1] * selected.ndim
+        weight_shape[axis] = len(weights)
+        values = np.sum(
+            selected * weights.reshape(weight_shape),
+            axis=axis,
+        )
+        index = [slice(None)] * image.ndim
+        index[axis] = target
+        output[tuple(index)] = values
+    return output
+
+
+def test_sam_preprocessing_matches_reference_separable_antialias() -> None:
+    source = np.arange(3 * 5 * 3, dtype=np.float32).reshape(3, 5, 3) / 50
+    expected = scalar_reference_axis(source, 7, axis=1)
+    expected = scalar_reference_axis(expected, 7, axis=0)
+    expected = expected.transpose(2, 0, 1)[None, ...].copy()
+    for channel, (mean, std) in enumerate(
+        zip((0.485, 0.456, 0.406), (0.229, 0.224, 0.225), strict=True)
+    ):
+        expected[0, channel] = (expected[0, channel] - mean) / std
+
+    actual = _prepare_sam_rgb(source, 7)
+
+    assert actual.shape == (1, 3, 7, 7)
+    assert actual.dtype == np.float32
+    assert actual.flags.c_contiguous
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=4e-7)
+
+
+def test_sam_preprocessing_accepts_rgb_bytes_and_normalizes() -> None:
+    image = np.full((2, 5, 3), 128, dtype=np.uint8)
+
+    tensor = prepare_sam_input(image)
+
+    assert tensor.shape == (1, 3, 1024, 1024)
+    assert tensor.dtype == np.float32
+    assert tensor.flags.c_contiguous
+    for channel, (mean, std) in enumerate(
+        zip((0.485, 0.456, 0.406), (0.229, 0.224, 0.225), strict=True)
+    ):
+        assert tensor[0, channel, 500, 500] == pytest.approx(
+            (128 / 255 - mean) / std, abs=2e-6
+        )
+
+
+def test_sam_preprocessing_rejects_full_rasters_above_analysis_budget() -> None:
+    image = np.zeros((1, 2049, 3), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="long edge at most 2048"):
+        prepare_sam_input(image)
+
+
+def test_normalized_prompt_coordinates_map_to_model_frame() -> None:
+    mapped = normalized_points_to_sam([[0.5, 0.25], [0.999, 0.0]])
+
+    assert mapped.shape == (1, 2, 2)
+    assert mapped.dtype == np.float32
+    np.testing.assert_allclose(mapped[0], [[512, 256], [1022.976, 0]], atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    "coords", [[[1.0, 0.0]], [[-0.01, 0.0]], [[float("nan"), 0.2]]]
+)
+def test_normalized_prompt_coordinates_reject_out_of_range_values(coords) -> None:
+    with pytest.raises(ValueError, match="normalized prompt coordinates"):
+        normalized_points_to_sam(coords)
 
 
 def test_reuses_image_features_for_repeated_prompts() -> None:
