@@ -68,3 +68,9 @@
 - Added a Linux Docker benchmark with cgroup v2 `memory.max`, `memory.peak`, and OOM event capture. It ran three fresh 4K CLI workers per graph under both 4 GiB and 2 GiB caps, with swap disabled and two CPUs.
 - All 12 trials completed with full 3840×2160 outputs and zero OOM kills. Median cgroup peak under 2 GiB was 1,428,115,456 B (1,362.0 MiB) for full attention and 733,523,968 B (699.5 MiB) for q128; q128 reduced peak by 48.6% but median inference was 10.9% slower.
 - Both tested graphs fit this depth-only 2 GiB container. This does not validate the full Laika pipeline or a 2 GiB minimum server. Per-trial cgroup artifacts and limitations are in the [depth cgroup report](benchmarks/m3-depth-cgroup-memory-limits-2026-10-21.md).
+
+## 2026-10-21 — attention chunk sweep under cgroup limits
+
+- Added q16/q32/q64 to the 4K Docker cgroup sweep. All 30 trials across full attention and q16/q32/q64/q128 under 4 GiB and 2 GiB completed with full finite output and zero OOM kills.
+- At 4 GiB, q32 had the lowest median cgroup peak (697,040,896 B / 664.8 MiB) while q128 had the shortest median inference (4.041 s). At 2 GiB, q128 had both the lowest median peak (703,885,312 B / 671.3 MiB) and shortest inference (4.011 s). q16 was slowest under both limits.
+- Keep the chunk profile configurable: its memory ranking varied with the limit, and these are synthetic depth-only tests on one runner. See the [cgroup chunk-sweep report](benchmarks/m3-depth-attention-cgroup-sweep-2026-10-21.md).
