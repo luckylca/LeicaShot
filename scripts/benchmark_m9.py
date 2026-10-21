@@ -71,7 +71,7 @@ def _run_worker(
 ) -> dict[str, Any]:
     import psutil
 
-    from laika.benchmark import _cgroup_v2_snapshot
+    from laika.benchmark import _cgroup_v2_snapshot, _parse_macos_peak_rss
 
     command = [
         sys.executable,
@@ -89,6 +89,9 @@ def _run_worker(
         "--row-chunk-height",
         str(row_chunk_height),
     ]
+    macos_high_water = sys.platform == "darwin" and Path("/usr/bin/time").is_file()
+    if macos_high_water:
+        command = ["/usr/bin/time", "-l", *command]
     cgroup_before = _cgroup_v2_snapshot()
     available_before = psutil.virtual_memory().available
     worker = subprocess.Popen(
@@ -126,6 +129,12 @@ def _run_worker(
         "peak_process_count": process_count,
         "process_tree_peak_rss_bytes": peak_rss,
         "process_tree_peak_uss_bytes": peak_uss if uss_available else None,
+        "worker_peak_rss_bytes": (
+            _parse_macos_peak_rss(stderr) if macos_high_water else None
+        ),
+        "worker_peak_rss_source": (
+            "macOS /usr/bin/time -l" if macos_high_water else None
+        ),
         "wall_seconds": wall_seconds,
         "host_available_memory_before_bytes": available_before,
         "cgroup_v2_before": cgroup_before,
@@ -237,7 +246,8 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
     cpu_brand = _sysctl_value("machdep.cpu.brand_string")
     return {
         "measurement": (
-            "fresh CLI process; process-tree RSS sampled at the configured interval"
+            "fresh CLI process; process-tree RSS sampled at the configured interval; "
+            "macOS also records the worker high-water RSS via /usr/bin/time -l"
         ),
         "date_local": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "host": {
@@ -271,6 +281,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "macOS has no cgroup v2 limit in this run",
             "RSS sampling can miss allocations shorter than the sample interval",
             "Summed RSS can count shared pages more than once",
+            "macOS worker high-water RSS covers the CLI process, not its process tree",
         ],
     }
 

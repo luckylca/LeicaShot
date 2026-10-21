@@ -6,6 +6,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -14,6 +15,12 @@ from typing import Any
 
 import psutil
 from PIL import __version__ as pillow_version
+
+
+def _parse_macos_peak_rss(stderr: str) -> int | None:
+    """Parse the byte-valued maximum RSS reported by macOS ``time -l``."""
+    match = re.search(r"(?m)^\s*(\d+)\s+maximum resident set size\s*$", stderr)
+    return int(match.group(1)) if match else None
 
 
 def _cgroup_v2_snapshot() -> dict[str, Any] | None:

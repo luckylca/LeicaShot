@@ -14,8 +14,9 @@ from typing import Any, Literal
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from laika.color import fuse_lab_detail
+from laika.color import fuse_lab_detail, fuse_lab_detail_to_sink
 from laika.engine import ImageInputError, ImageLimitError, ImageLimits
+from laika.png import PngRGBStreamWriter
 
 M9_MODEL_FILENAME = "leica-m9-v3-epoch11.fp16.onnx"
 M9_MODEL_SHA256 = "8936b8c86656265ab07c30b9b4cbbd7fa195d6e44cb3be1d4fd059bb36781e33"
@@ -514,7 +515,6 @@ class M9ColorEngine:
         predicted_full = _resize_prediction(prediction.rgb, output_width, output_height)
         stages["prediction_resize"] = time.perf_counter() - stage
         del prediction
-        stage = time.perf_counter()
         try:
             import cv2
 
@@ -523,15 +523,18 @@ class M9ColorEngine:
             raise M9InferenceError(
                 "M9 Lab fusion requires OpenCV; install the inference extra"
             ) from exc
-        fused = fuse_lab_detail(
-            original_rgb,
-            predicted_full,
-            sigma_l=M9_SIGMA_L,
-            sigma_ab=M9_SIGMA_AB,
-            row_chunk_height=self.row_chunk_height,
-        )
-        stages["lab_fusion"] = time.perf_counter() - stage
-        del original_rgb, predicted_full
+        fused = None
+        if output_format == "JPEG":
+            stage = time.perf_counter()
+            fused = fuse_lab_detail(
+                original_rgb,
+                predicted_full,
+                sigma_l=M9_SIGMA_L,
+                sigma_ab=M9_SIGMA_AB,
+                row_chunk_height=self.row_chunk_height,
+            )
+            stages["lab_fusion"] = time.perf_counter() - stage
+            del original_rgb, predicted_full
 
         destination.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
@@ -540,21 +543,40 @@ class M9ColorEngine:
         temporary_path = Path(temporary_name)
         stage = time.perf_counter()
         try:
-            image = Image.fromarray(fused, mode="RGB")
-            try:
-                save_options: dict[str, Any] = {}
-                if icc_profile:
-                    save_options["icc_profile"] = icc_profile
-                if output_format == "JPEG":
-                    save_options.update(quality=95, subsampling=0)
-                stream = os.fdopen(descriptor, "w+b")
-                descriptor = -1
-                with stream:
-                    image.save(stream, format=output_format, **save_options)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            finally:
-                image.close()
+            stream = os.fdopen(descriptor, "w+b")
+            descriptor = -1
+            with stream:
+                if output_format == "PNG":
+                    writer = PngRGBStreamWriter(
+                        stream,
+                        output_width,
+                        output_height,
+                        icc_profile=icc_profile,
+                        compression_level=3,
+                    )
+                    fusion_seconds = fuse_lab_detail_to_sink(
+                        original_rgb,
+                        predicted_full,
+                        lambda _row_start, rows: writer.write_rows(rows),
+                        sigma_l=M9_SIGMA_L,
+                        sigma_ab=M9_SIGMA_AB,
+                        row_chunk_height=self.row_chunk_height,
+                    )
+                    writer.finish()
+                    del original_rgb, predicted_full
+                    stages["lab_fusion"] = fusion_seconds
+                else:
+                    image = Image.fromarray(fused, mode="RGB")
+                    try:
+                        save_options: dict[str, Any] = {}
+                        if icc_profile:
+                            save_options["icc_profile"] = icc_profile
+                        save_options.update(quality=95, subsampling=0)
+                        image.save(stream, format=output_format, **save_options)
+                    finally:
+                        image.close()
+                stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary_path, destination)
         except Exception:
             # If wrapping the descriptor itself failed, ensure it is not leaked.
@@ -566,6 +588,10 @@ class M9ColorEngine:
             temporary_path.unlink(missing_ok=True)
             raise
         stages["encode"] = time.perf_counter() - stage
+        if output_format == "PNG":
+            stages["encode"] = max(
+                0.0, stages["encode"] - stages.get("lab_fusion", 0.0)
+            )
         return M9ColorResult(
             input_format=metadata.image_format,
             output_format=output_format,
