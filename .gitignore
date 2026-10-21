@@ -12,7 +12,8 @@ build/
 dist/
 
 # Model artifacts and runtime data
-models/
+models/*
+!models/manifest.json
 model-cache/
 cache/
 uploads/
@@ -20,6 +21,7 @@ outputs/
 artifacts/
 benchmarks/results/
 *.onnx
+*.onnx.data
 *.pt
 *.pth
 *.safetensors

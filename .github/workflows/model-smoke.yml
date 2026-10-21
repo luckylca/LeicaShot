@@ -1,0 +1,58 @@
+name: Optional model smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  depth-anything-v2-small:
+    name: Depth Anything V2 Small · CPU ONNX parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned CPU model toolchain
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            torch==2.14.1 torchvision==0.29.1
+          python -m pip install \
+            numpy==2.4.6 opencv-python-headless==5.0.0.93 \
+            onnx==1.23.2 onnxruntime==1.31.0 onnxscript==0.7.2
+          python -m pip install -e .
+      - name: Checkout pinned upstream model definition
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/DepthAnything/Depth-Anything-V2.git \
+            "$RUNNER_TEMP/depth-anything-v2"
+          git -C "$RUNNER_TEMP/depth-anything-v2" \
+            checkout a561b849ebae10a6f5ef49e26c83cbbcd36c71bf
+      - name: Download and verify official checkpoint
+        run: |
+          laika-models fetch depth-anything-v2-small \
+            --cache-dir "$RUNNER_TEMP/laika-models"
+      - name: Export and compare framework/ONNX output
+        run: |
+          python scripts/export_depth_anything_v2.py \
+            --source-checkout "$RUNNER_TEMP/depth-anything-v2" \
+            --weights "$RUNNER_TEMP/laika-models/depth_anything_v2_vits.pth" \
+            --output "$RUNNER_TEMP/depth-anything-v2-small-518x518.onnx" \
+            --height 518 --width 518 --threads 1
+      - name: Measure PyTorch and ONNX CPU workers
+        run: |
+          python scripts/benchmark_depth_anything_v2.py \
+            --runtime pytorch \
+            --source-checkout "$RUNNER_TEMP/depth-anything-v2" \
+            --weights "$RUNNER_TEMP/laika-models/depth_anything_v2_vits.pth" \
+            --height 518 --width 518 --threads 1 --runs 3
+          python scripts/benchmark_depth_anything_v2.py \
+            --runtime onnx \
+            --onnx "$RUNNER_TEMP/depth-anything-v2-small-518x518.onnx" \
+            --height 518 --width 518 --threads 1 --runs 3

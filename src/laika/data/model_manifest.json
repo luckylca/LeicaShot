@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "id": "depth-anything-v2-small",
+      "name": "Depth Anything V2 Small",
+      "artifact": "depth_anything_v2_vits.pth",
+      "format": "pytorch-state-dict",
+      "source_url": "https://huggingface.co/depth-anything/Depth-Anything-V2-Small/resolve/05bbaec5306c04f1fa00a8c376c7dcf4153e7fe8/depth_anything_v2_vits.pth",
+      "source_revision": "05bbaec5306c04f1fa00a8c376c7dcf4153e7fe8",
+      "source_code_revision": "a561b849ebae10a6f5ef49e26c83cbbcd36c71bf",
+      "expected_bytes": 99218434,
+      "sha256": "715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378",
+      "license": "Apache-2.0",
+      "license_url": "https://github.com/DepthAnything/Depth-Anything-V2/blob/a561b849ebae10a6f5ef49e26c83cbbcd36c71bf/LICENSE",
+      "status": "pytorch-cpu-inference-and-fixed-shape-onnx-parity-validated"
+    }
+  ]
+}

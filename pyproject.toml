@@ -31,9 +31,13 @@ dev = [
 [project.scripts]
 laika = "laika.cli:main"
 laika-bench = "laika.benchmark:main"
+laika-models = "laika.model_assets:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+laika = ["data/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
