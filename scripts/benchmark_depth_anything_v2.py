@@ -25,6 +25,9 @@ from laika.model_assets import ModelAssetError, load_manifest, verify_artifact  
 def _worker(args: argparse.Namespace) -> dict[str, Any]:
     import numpy as np
 
+    if args.query_chunk_size is not None and args.query_chunk_size < 1:
+        raise ValueError("query chunk size must be positive")
+
     input_array = np.random.default_rng(args.seed).standard_normal(
         (1, 3, args.height, args.width), dtype=np.float32
     )
@@ -68,6 +71,10 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         model.load_state_dict(checkpoint, strict=True)
         del checkpoint
         model.eval()
+        if args.query_chunk_size is not None:
+            from export_depth_anything_v2 import _install_global_query_chunking
+
+            _install_global_query_chunking(model, torch, args.query_chunk_size)
         load_seconds = time.perf_counter() - load_started
         tensor = torch.from_numpy(input_array)
         with torch.inference_mode():
@@ -90,6 +97,20 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError("ONNX Runtime benchmark requires an ONNX path")
         if not args.onnx.is_file():
             raise ValueError(f"ONNX model is unavailable: {args.onnx}")
+        if args.query_chunk_size is not None:
+            try:
+                import onnx
+            except ImportError as exc:
+                raise ValueError(
+                    "validating a query-chunked graph requires the ONNX package"
+                ) from exc
+            graph = onnx.load(str(args.onnx), load_external_data=False)
+            loop_nodes = sum(node.op_type == "Loop" for node in graph.graph.node)
+            if loop_nodes != 12:
+                raise ValueError(
+                    "query-chunked ONNX graph must contain 12 attention loops; "
+                    f"found {loop_nodes}"
+                )
         from export_depth_anything_v2 import _sha256
 
         provenance["onnx_sha256"] = _sha256(args.onnx)
@@ -117,6 +138,7 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError("inference returned non-finite output")
     return {
         "runtime": args.runtime,
+        "attention_query_chunk_size": args.query_chunk_size,
         "seed": args.seed,
         "provenance": provenance,
         "runtime_versions": runtime_versions,
@@ -143,6 +165,8 @@ def _measure(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("network input dimensions must be multiples of 14")
     if args.threads < 1 or args.runs < 1 or args.sample_interval_ms < 1:
         raise ValueError("threads, runs, and sample interval must be positive")
+    if args.query_chunk_size is not None and args.query_chunk_size < 1:
+        raise ValueError("query chunk size must be positive")
     if args.worker:
         return _worker(args)
 
@@ -210,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--width", type=int, default=518)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--query-chunk-size", type=int)
     parser.add_argument("--seed", type=int, default=20261021)
     parser.add_argument("--sample-interval-ms", type=int, default=5)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)

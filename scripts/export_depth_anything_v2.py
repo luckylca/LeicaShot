@@ -186,6 +186,62 @@ def _install_dynamic_shape_adapters(model: Any, torch: Any) -> Any:
     return original_head_forward
 
 
+def _install_global_query_chunking(
+    model: Any, torch: Any, chunk_size: int
+) -> dict[Any, Any]:
+    """Compute exact global attention in query chunks while retaining all keys."""
+    if chunk_size < 1:
+        raise ModelAssetError("attention query chunk size must be positive")
+
+    scripted = torch.jit.CompilationUnit(
+        """
+def chunked_global_attention(
+    q: Tensor, k: Tensor, v: Tensor, scale: float, chunk_size: int
+) -> Tensor:
+    chunks = torch.jit.annotate(List[Tensor], [])
+    start = 0
+    token_count = q.size(2)
+    while start < token_count:
+        end = min(start + chunk_size, token_count)
+        query = q[:, :, start:end, :] * scale
+        scores = torch.matmul(query, torch.transpose(k, -2, -1))
+        probabilities = torch.softmax(scores, dim=-1)
+        chunks.append(torch.matmul(probabilities, v))
+        start = end
+    return torch.cat(chunks, dim=2)
+"""
+    ).chunked_global_attention
+
+    originals: dict[Any, Any] = {}
+    for block in model.pretrained.blocks:
+        attention = block.attn
+        originals[attention] = attention.forward
+
+        def chunked_forward(
+            module: Any, values: Any, *, _attention: Any = attention
+        ) -> Any:
+            batch, tokens, channels = values.shape
+            qkv = _attention.qkv(values).reshape(
+                batch,
+                tokens,
+                3,
+                _attention.num_heads,
+                channels // _attention.num_heads,
+            )
+            qkv = qkv.permute(2, 0, 3, 1, 4)
+            attended = scripted(qkv[0], qkv[1], qkv[2], _attention.scale, chunk_size)
+            attended = attended.transpose(1, 2).reshape(batch, tokens, channels)
+            return _attention.proj_drop(_attention.proj(attended))
+
+        attention.forward = MethodType(chunked_forward, attention)
+    return originals
+
+
+def _restore_attention_forwards(originals: dict[Any, Any]) -> None:
+    for attention, forward in originals.items():
+        attention.forward = forward
+
+
 def _dynamic_validation_shapes(height: int, width: int) -> list[tuple[int, int]]:
     candidates = [(height, width), (700, 532), (1400, 518), (518, 518)]
     return list(dict.fromkeys(candidates))
@@ -220,6 +276,10 @@ def _export(args: argparse.Namespace) -> dict[str, Any]:
         raise ModelAssetError("network input dimensions must be multiples of 14")
     if args.threads < 1:
         raise ModelAssetError("thread count must be positive")
+    if args.query_chunk_size is not None and not args.dynamic:
+        raise ModelAssetError("query chunking currently requires --dynamic export")
+    if args.query_chunk_size is not None and args.query_chunk_size < 1:
+        raise ModelAssetError("attention query chunk size must be positive")
     if not math.isfinite(args.max_abs_error) or args.max_abs_error <= 0:
         raise ModelAssetError("maximum absolute error must be positive")
     data_output = Path(f"{output}.data")
@@ -274,9 +334,16 @@ def _export(args: argparse.Namespace) -> dict[str, Any]:
         dynamic_head_forward = None
         shapes = [(args.height, args.width)]
 
+    original_attention_forwards = (
+        _install_global_query_chunking(model, torch, args.query_chunk_size)
+        if args.query_chunk_size is not None
+        else None
+    )
+
     inputs: dict[tuple[int, int], Any] = {}
     references: dict[tuple[int, int], Any] = {}
     adapter_errors: list[float] = []
+    attention_errors: list[float] = []
     for index, (height, width) in enumerate(shapes):
         if height < 518 or width < 518 or height % 14 or width % 14:
             raise ModelAssetError(
@@ -288,12 +355,31 @@ def _export(args: argparse.Namespace) -> dict[str, Any]:
         inputs[(height, width)] = input_array
         input_tensor = torch.from_numpy(input_array)
         with torch.inference_mode():
+            if original_attention_forwards is not None:
+                chunked_output = model(input_tensor)
+                _restore_attention_forwards(original_attention_forwards)
+                reference_output = model(input_tensor)
+                original_attention_forwards = _install_global_query_chunking(
+                    model, torch, args.query_chunk_size
+                )
+                attention_delta = torch.abs(chunked_output - reference_output)
+                attention_error = float(attention_delta.max())
+                attention_errors.append(attention_error)
+                if attention_error > args.max_abs_error:
+                    raise ModelAssetError(
+                        "query chunking changed PyTorch output: "
+                        f"max_abs_error={attention_error:g}, "
+                        f"limit={args.max_abs_error:g}"
+                    )
+            elif args.dynamic:
+                reference_output = model(input_tensor)
+
             if args.dynamic:
                 adapted_output = model(input_tensor)
                 model.depth_head.forward = original_head_forward
-                reference_output = model(input_tensor)
+                adapter_reference = model(input_tensor)
                 model.depth_head.forward = dynamic_head_forward
-                adapter_delta = torch.abs(adapted_output - reference_output)
+                adapter_delta = torch.abs(adapted_output - adapter_reference)
                 adapter_error = float(adapter_delta.max())
                 adapter_errors.append(adapter_error)
                 if adapter_error > 1e-6:
@@ -301,7 +387,9 @@ def _export(args: argparse.Namespace) -> dict[str, Any]:
                         "dynamic DPT adapter changed PyTorch output: "
                         f"max_abs_error={adapter_error:g}"
                     )
-            else:
+                if original_attention_forwards is not None:
+                    reference_output = chunked_output
+            elif original_attention_forwards is None:
                 reference_output = model(input_tensor)
             references[(height, width)] = reference_output.cpu().numpy()
 
@@ -343,6 +431,16 @@ def _export(args: argparse.Namespace) -> dict[str, Any]:
         export_seconds = time.perf_counter() - export_started
 
         onnx.checker.check_model(str(temporary_model))
+        exported_model = onnx.load(str(temporary_model), load_external_data=False)
+        loop_nodes = sum(node.op_type == "Loop" for node in exported_model.graph.node)
+        expected_loop_nodes = (
+            len(model.pretrained.blocks) if args.query_chunk_size is not None else 0
+        )
+        if loop_nodes != expected_loop_nodes:
+            raise ModelAssetError(
+                "ONNX attention loop count mismatch: "
+                f"expected {expected_loop_nodes}, found {loop_nodes}"
+            )
         options = ort.SessionOptions()
         options.intra_op_num_threads = args.threads
         options.inter_op_num_threads = 1
@@ -401,10 +499,14 @@ def _export(args: argparse.Namespace) -> dict[str, Any]:
             "threads": args.threads,
             "opset": 17 if args.dynamic else OPSET,
             "dynamic_shapes": args.dynamic,
+            "attention_query_chunk_size": args.query_chunk_size,
+            "onnx_top_level_loop_nodes": loop_nodes,
+            "expected_attention_loop_nodes": expected_loop_nodes,
             "input_shapes_tested": [list(inputs[shape].shape) for shape in shapes],
             "output_shapes_tested": [row["output_shape"] for row in checks],
             "checks": checks,
             "dynamic_dpt_adapter_max_absolute_error": max(adapter_errors, default=0.0),
+            "query_chunking_max_absolute_error": max(attention_errors, default=0.0),
             "max_absolute_error": error_max,
             "mean_absolute_error": error_mean,
             "p99_absolute_error": error_p99,
@@ -461,6 +563,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dynamic",
         action="store_true",
         help="export and validate dynamic height/width input shapes",
+    )
+    parser.add_argument(
+        "--query-chunk-size",
+        type=int,
+        help="compute full-global attention for this many queries per chunk",
     )
     parser.add_argument("--seed", type=int, default=20261021)
     parser.add_argument("--max-abs-error", type=float, default=1e-4)
