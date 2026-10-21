@@ -71,8 +71,10 @@ PYTHONPATH=src python scripts/benchmark_depth_inference.py \
 
 The Mac measurements used the temporary model environment and graph artifacts
 listed in the development log; they were not collected in a memory cgroup. The
-optional GitHub model smoke repeats reference-profile measurements on Linux
-and records the cgroup state. Its runner currently has no fixed memory cap.
+optional GitHub model smoke now repeats the depth CLI measurements in Docker
+containers with 4 GiB and 2 GiB cgroup v2 limits. Those isolated results are
+recorded separately from these unconstrained Mac trials and do not represent a
+complete image-edit pipeline.
 
 ## Limits
 

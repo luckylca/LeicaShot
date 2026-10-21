@@ -16,7 +16,7 @@ import psutil
 from PIL import __version__ as pillow_version
 
 
-def _cgroup_v2_snapshot() -> dict[str, int | str] | None:
+def _cgroup_v2_snapshot() -> dict[str, Any] | None:
     """Read cgroup v2 counters when the current process is inside a visible cgroup."""
     cgroup_file = Path("/proc/self/cgroup")
     try:
@@ -33,7 +33,7 @@ def _cgroup_v2_snapshot() -> dict[str, int | str] | None:
     cgroup = (root / relative_path.lstrip("/")).resolve()
     if cgroup != root and root not in cgroup.parents:
         return None
-    result: dict[str, int | str] = {}
+    result: dict[str, Any] = {}
     for filename, key in (
         ("memory.current", "current_bytes"),
         ("memory.max", "limit_bytes"),
@@ -50,7 +50,43 @@ def _cgroup_v2_snapshot() -> dict[str, int | str] | None:
                 result[key] = int(raw)
             except ValueError:
                 continue
+    try:
+        event_text = (cgroup / "memory.events").read_text(encoding="ascii")
+    except OSError:
+        event_text = ""
+    events = _parse_cgroup_v2_memory_events(event_text)
+    if events:
+        result["memory_events"] = events
     return result or None
+
+
+def _parse_cgroup_v2_memory_events(content: str) -> dict[str, int]:
+    """Parse Linux cgroup v2 memory event counters, ignoring malformed rows."""
+    events: dict[str, int] = {}
+    for line in content.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            value = int(fields[1])
+        except ValueError:
+            continue
+        if value >= 0:
+            events[fields[0]] = value
+    return events
+
+
+def _classify_cgroup_worker_outcome(
+    return_code: int, before: dict[str, Any] | None, after: dict[str, Any] | None
+) -> str:
+    """Distinguish a successful worker, an observed OOM kill, and other errors."""
+    if return_code == 0:
+        return "success"
+    before_events = (before or {}).get("memory_events", {})
+    after_events = (after or {}).get("memory_events", {})
+    if after_events.get("oom_kill", 0) > before_events.get("oom_kill", 0):
+        return "oom"
+    return "error"
 
 
 def _process_tree_metrics(root_pid: int) -> tuple[int, int | None, float, int]:
