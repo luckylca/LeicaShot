@@ -14,6 +14,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -339,6 +340,87 @@ def select_subject_mask(
             score=float(candidates.reshape(3)[candidate_index]),
         )
     raise ValueError("no SAM candidate contains the positive prompt")
+
+
+def subject_trimap_radius(width: int, height: int) -> int:
+    """Scale the reference's 5-pixel unknown-band radius to analysis dimensions."""
+    if (
+        isinstance(width, bool)
+        or isinstance(height, bool)
+        or not isinstance(width, Integral)
+        or not isinstance(height, Integral)
+        or width < 1
+        or height < 1
+        or max(width, height) > SAM_ANALYSIS_LONG_EDGE
+    ):
+        raise ValueError("analysis dimensions must be within the 2048-pixel budget")
+    return max(5, round(5.0 * max(width, height) / 1220.0))
+
+
+def build_subject_trimap(mask: Any, radius: int | None = None) -> Any:
+    """Build the reference's 0 / 128 / 255 trimap with an elliptical neighborhood.
+
+    A neighborhood is foreground only when all in-image ellipse pixels are
+    foreground, background only when none are foreground, and unknown otherwise.
+    Pixels outside the image are excluded from the neighborhood, matching the
+    reference's neutral border handling. Row prefix sums keep the work linear in
+    image width for each ellipse row instead of scanning a disk per pixel.
+    """
+    import numpy as np
+
+    if not isinstance(mask, np.ndarray) or mask.ndim != 2:
+        raise ValueError("mask must be a 2D NumPy array")
+    height, width = mask.shape
+    if height < 1 or width < 1 or max(width, height) > SAM_ANALYSIS_LONG_EDGE:
+        raise ValueError("mask dimensions must be within the 2048-pixel budget")
+    if not mask.flags.c_contiguous:
+        raise ValueError("mask must be C-contiguous")
+    if mask.dtype != np.float32:
+        raise ValueError("mask values must use float32")
+    if not np.isfinite(mask).all() or np.any(mask < 0.0) or np.any(mask > 1.0):
+        raise ValueError("mask values must be finite and in [0, 1]")
+    if radius is None:
+        radius = subject_trimap_radius(width, height)
+    if isinstance(radius, bool) or not isinstance(radius, (int, np.integer)):
+        raise ValueError("radius must be a positive integer")
+    if radius < 1:
+        raise ValueError("radius must be a positive integer")
+
+    offsets = np.arange(-radius, radius + 1, dtype=np.float64)
+    row_radii = np.rint(
+        radius * np.sqrt(np.maximum(0.0, 1.0 - (offsets / radius) ** 2))
+    ).astype(np.int64)
+    prefix = np.empty((height, width + 1), dtype=np.int32)
+    prefix[:, 0] = 0
+    np.cumsum(mask > 0.5, axis=1, dtype=np.int32, out=prefix[:, 1:])
+
+    output = np.full(
+        (height, width), np.float32(128.0) / np.float32(255.0), dtype=np.float32
+    )
+    x = np.arange(width, dtype=np.int64)[None, :]
+    chunk_height = min(64, height)
+    for start in range(0, height, chunk_height):
+        stop = min(height, start + chunk_height)
+        rows = np.arange(start, stop, dtype=np.int64)
+        inside = np.zeros((len(rows), width), dtype=np.int32)
+        cells = np.zeros_like(inside)
+        for offset, row_radius in zip(offsets.astype(np.int64), row_radii, strict=True):
+            source_y = rows + offset
+            valid = (source_y >= 0) & (source_y < height)
+            source_y = np.clip(source_y, 0, height - 1)
+            left = np.maximum(0, x - row_radius)
+            right = np.minimum(width, x + row_radius + 1)
+            row_count = (
+                prefix[source_y[:, None], right] - prefix[source_y[:, None], left]
+            )
+            row_count *= valid[:, None]
+            inside += row_count
+            cells += (right - left) * valid[:, None]
+        core = inside == cells
+        background = inside == 0
+        output[start:stop][core] = 1.0
+        output[start:stop][background] = 0.0
+    return output
 
 
 class ImageEmbeddingCache:
