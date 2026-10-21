@@ -1,8 +1,29 @@
 # Model artifact acquisition
 
-Model files are not committed to Laika. `models/manifest.json` pins each supported artifact's upstream revision, filename, expected size, SHA-256, and license record. The `laika-models` command downloads into a user cache and publishes the file only after both size and SHA-256 match.
+Model files are not committed to Laika. `models/manifest.json` pins artifacts that have an explicit fetch workflow; `laika-models` downloads those into a user cache and makes a file available only after size and SHA-256 match. M9 has a separate local-only record because this repository does not assert public redistribution permission for its weights.
 
-The manifest includes Depth Anything V2 Small and a pinned SAM 2.1 Hiera Tiny checkpoint. The official SAM 2.1 model card declares Apache-2.0 and its pinned checkpoint page records SHA-256 `7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69` and 156,008,466 bytes. The Meta implementation is separately pinned to `2b90b9f5ceec907a1c18123530e92e794ad901a4`. Laika's split encoder/decoder ONNX export passed synthetic-tensor comparison with the upstream PyTorch model, and the bounded embedding cache is covered by mock-session tests. A 2 GiB single-stage CPU measurement is in the [SAM benchmark](benchmarks/m1-sam2-cgroup-2026-10-21.md); it is not a full-pipeline or real-photo quality result. The reference project's converted ONNX is not downloaded, redistributed, or treated as a validated Laika artifact.
+The manifest includes Depth Anything V2 Small and a pinned SAM 2.1 Hiera Tiny checkpoint. The official SAM 2.1 model card declares Apache-2.0 and its pinned checkpoint page records SHA-256 `7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69` and 156,008,466 bytes. The Meta implementation is separately pinned to `2b90b9f5ceec907a1c18123530e92e794ad901a4`. Laika's split encoder/decoder ONNX export passed synthetic-tensor comparison with the upstream PyTorch model, and the bounded embedding cache is covered by mock-session tests. A 2 GiB single-stage CPU measurement is in the [SAM benchmark](benchmarks/m1-sam2-cgroup-2026-10-21.md); it is not a full-pipeline or real-photo quality result.
+
+## M9 series 3.0 epoch11
+
+M9 is Laika's AI color predictor and connects directly to `laika.color.fuse_lab_detail`. The user confirmed on 2026-10-22 that this project has the required authorization to use M9 and the other planned model assets. The initial general license assessment has been superseded for project use; see [ADR 0002](adr/0002-m9-project-authorization.md). This confirmation does not establish public redistribution permission. Keep the ONNX file in a user-provided local path and outside Git.
+
+The pinned local artifact is `leica-m9-v3-epoch11.fp16.onnx`, 10,053,669 bytes, SHA-256 `8936b8c86656265ab07c30b9b4cbbd7fa195d6e44cb3be1d4fd059bb36781e33`. The reference `models.json` lists source checkpoint SHA-256 `8456c139e98ce98ac8742a5d20bc1a65a0315f85f13ad37c02cb708af1c337c6`. The reference model record identifies internal FP16 and external FP32. Laika's adapter verifies the ONNX hash, requires the single float32 NCHW input `input` and output `output`, and selects only ONNX Runtime's CPU provider.
+
+Processing applies EXIF orientation, resizes RGB to an aspect-preserving 1024-pixel long edge using Pillow bilinear, normalizes each channel with `((x / 255) - 0.5) / 0.5`, and runs M9 with float32 external tensors. Output values map through `clip(y * 0.5 + 0.5, 0, 1)` and truncating 8-bit conversion. The predicted RGB is resized to the full oriented source dimensions with Pillow bicubic and fused with source detail using Lab sigma L=25 and a/b=20. The final raster keeps the oriented source dimensions; the model working size never changes the export size.
+
+Install the inference dependencies and run the shared engine from the CLI:
+
+```bash
+python -m pip install -e '.[inference]'
+laika color input.jpg output.png \
+  --model /path/to/leica-m9-v3-epoch11.fp16.onnx \
+  --strategy low-memory --threads 1 --row-chunk-height 512
+```
+
+`low-memory` uses one ONNX intra-op thread by default, disables the CPU memory arena/pattern, releases the session after inference, and reopens the unchanged input for full-resolution fusion. `balanced` keeps an M9 session for reuse across calls on the same `M9ColorEngine` instance, enables those runtime allocators, and defaults to at most four intra-op threads. Both profiles run the same preprocessing, model and Lab algorithm. Explicit `--threads` applies to ONNX Runtime and OpenCV. Neither profile reduces the final dimensions. `M9Onnx` and `M9ColorEngine` are also available from the Python package.
+
+The local `scripts/benchmark_m9.py` command runs fresh CLI workers and samples process-tree RSS. It can compare row chunk heights against full-height fusion without committing an image or model. On macOS it reports sampled RSS and cannot claim a cgroup memory limit; constrained 4/2 GiB service verification requires Linux cgroups.
 
 The Depth Anything V2 Small checkpoint's official model card identifies it as Apache-2.0; its file page records the checkpoint hash and byte size. The upstream model implementation is separately pinned to `a561b849ebae10a6f5ef49e26c83cbbcd36c71bf`. The checkpoint has been strictly loaded and run on CPU. Static and dynamic ONNX exports have passed seeded-tensor checks; the dynamic graph was tested at four multiple-of-14 shapes. This does not validate other dimension constraints, photo quality, or the full Laika pipeline; see the [M1 benchmark](benchmarks/m1-depth-anything-2026-10-21.md) and [dynamic-shape experiment](benchmarks/m1-dynamic-depth-2026-10-21.md).
 
@@ -83,9 +104,9 @@ SAM2_BUILD_CUDA=0 /tmp/laika-sam-env/bin/pip install -e /tmp/laika-sam2
   --output-dir /tmp/laika-sam-onnx --threads 1
 ```
 
-The M9 checkpoint remains excluded because its reference project license limits it to personal non-commercial use. ARNet and GAIC checkpoint permissions remain unresolved. Adobe Research's Composition-1k license restricts trained models to non-commercial use and distribution. See the [ViTMatte study](research/vitmatte-integration.md) for the conflicting Hugging Face metadata and Laika's exclusion decision.
+The user confirmed that M9 and the other required model uses have project authorization. This supports development and use within Laika; it does not assert that any weights may be publicly redistributed. Keep model assets local by default. The model-card, dataset, and code-license notes below describe published terms and remain relevant to attribution and distribution decisions.
 
-ViTMatte is not in the fetchable model manifest. `laika.matting` currently provides local RGB/trimap tensor preparation, a CPU adapter for a caller-supplied dynamic-spatial `pixel_values` → `alpha` ONNX graph, and configurable 512/768/1024 tile inference. The Composition-1k weights are excluded from commercial use and redistribution by Adobe's dataset license absent a separate written grant. No ViTMatte weights have been independently hash-verified or exported by Laika; the reference project's artifact hashes are comparison metadata only. See the [ViTMatte integration study](research/vitmatte-integration.md) for provenance, license status, and validation limits.
+ViTMatte is not in the fetchable model manifest. `laika.matting` currently provides local RGB/trimap tensor preparation, a CPU adapter for a caller-supplied dynamic-spatial `pixel_values` → `alpha` ONNX graph, and configurable 512/768/1024 tile inference. Project use is authorized by the user; the model remains a local asset, and public redistribution is not asserted. No ViTMatte weights have been independently hash-verified or exported by Laika; the reference project's artifact hashes are comparison metadata only. See the [ViTMatte integration study](research/vitmatte-integration.md) for provenance, license status, and validation limits.
 
 ## CPU inference adapter and CLI
 

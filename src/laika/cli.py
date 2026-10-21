@@ -17,7 +17,8 @@ from laika.depth import (
     DepthInferenceError,
     depth_input_geometry,
 )
-from laika.engine import ImageInputError, ImageLimitError, process_image
+from laika.engine import ImageInputError, ImageLimitError, ImageLimits, process_image
+from laika.m9 import M9ColorEngine, M9InferenceError
 
 SUPPORTED_INPUT_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
 
@@ -53,6 +54,31 @@ def build_parser() -> argparse.ArgumentParser:
     depth_parser.add_argument("--max-upload-bytes", type=int, default=50 * 1024 * 1024)
     depth_parser.add_argument("--max-pixels", type=int, default=40_000_000)
     depth_parser.add_argument("--max-network-pixels", type=int, default=4_000_000)
+    color_parser = subparsers.add_parser(
+        "color", help="run local M9 ONNX color prediction and Lab detail fusion"
+    )
+    color_parser.add_argument("input", help="input JPEG, PNG, or WebP")
+    color_parser.add_argument("output", help="output .png, .jpg, or .jpeg path")
+    color_parser.add_argument(
+        "--model", required=True, help="local M9 ONNX path (SHA-256 is verified)"
+    )
+    color_parser.add_argument(
+        "--strategy",
+        choices=("low-memory", "balanced"),
+        default="low-memory",
+        help="Low Memory releases the session before full-resolution fusion",
+    )
+    color_parser.add_argument(
+        "--threads", type=int, default=None, help="ONNX Runtime intra-op threads"
+    )
+    color_parser.add_argument(
+        "--row-chunk-height",
+        type=int,
+        default=512,
+        help="exact Lab fusion row band height; default: 512",
+    )
+    color_parser.add_argument("--max-upload-bytes", type=int, default=50 * 1024 * 1024)
+    color_parser.add_argument("--max-pixels", type=int, default=40_000_000)
     return parser
 
 
@@ -214,6 +240,24 @@ def main() -> int:
         except (DepthInferenceError, ImageInputError, OSError, ValueError) as exc:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 2
+    if args.command == "color":
+        try:
+            with M9ColorEngine(
+                args.model,
+                strategy=args.strategy,
+                intra_op_num_threads=args.threads,
+                limits=ImageLimits(
+                    max_upload_bytes=args.max_upload_bytes,
+                    max_pixels=args.max_pixels,
+                ),
+                row_chunk_height=args.row_chunk_height,
+            ) as engine:
+                result = engine.process_file(args.input, args.output)
+        except (M9InferenceError, ImageInputError, OSError, ValueError) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 2
+        print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+        return 0
     try:
         result = process_image(args.input, args.output)
     except (ImageInputError, OSError) as exc:

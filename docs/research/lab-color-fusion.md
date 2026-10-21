@@ -12,8 +12,8 @@ result_c = clip(original_lab_c + Gaussian(predicted_lab_c - original_lab_c))
 
 It uses sigma 25 for L, sigma 20 for a/b, OpenCV's reflect-101 border, then
 converts the fused 8-bit Lab image back to RGB. `laika.color.fuse_lab_detail`
-implements this math using OpenCV native operations. It does not include a
-color prediction model and does not load M9 or any other weights.
+implements this math using OpenCV native operations. `laika.m9.M9ColorEngine`
+now supplies the prediction from the hash-verified M9 series 3.0 epoch11 ONNX.
 
 To reduce temporary memory for tall frames, the function processes row bands
 with a vertical halo equal to the largest Gaussian radius (100 pixels at the
@@ -26,10 +26,11 @@ synthetic fusion regression.
 ## License boundary
 
 The Laika implementation is independently written around OpenCV and NumPy; it
-does not copy the reference Kotlin implementation. The reference M9 checkpoint
-remains excluded under its personal non-commercial restriction. This stage is
-useful only with a separately licensed predictor or caller-provided predicted
-RGB. It is not an AI color engine by itself.
+does not copy the reference Kotlin implementation. The user confirmed that
+project use of M9 is authorized. The ONNX file is a local model asset and is not
+committed or offered for public redistribution. This current project decision
+supersedes the initial license-boundary assessment; see
+[ADR 0002](../adr/0002-m9-project-authorization.md).
 
 See the [row-streaming benchmark](../benchmarks/m3-lab-fusion-row-streaming-2026-10-21.md)
 for fresh-worker RSS and time measurements at 2048×1536 and 3840×2160.

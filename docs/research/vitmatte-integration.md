@@ -51,11 +51,11 @@ manifest.
   the dataset, restricts the dataset to non-commercial purposes, and expressly
   says models can only be used and distributed for non-commercial purposes and
   may not be sold. The model-card Apache label conflicts with that separate
-  dataset restriction for this Composition-1k checkpoint. Laika therefore
-  excludes this checkpoint and any conversion from commercial service,
-  redistribution, and the fetchable model manifest absent a separate written
-  grant. The adapter code remains usable for non-commercial research or a
-  separately cleared compatible checkpoint.
+  dataset restriction for this Composition-1k checkpoint. The user confirmed
+  project authorization for required models, including ViTMatte, so Laika
+  continues with a user-provided local asset. That confirmation does not assert
+  public redistribution rights; keep weights outside the fetchable manifest
+  and Git history.
 - The reference `models.json` contains checkpoint and ONNX hashes, but Laika has
   not independently verified either artifact. Those values are not promoted to
   Laika's model manifest or treated as a verified baseline.
@@ -69,9 +69,9 @@ These tests verify implementation invariants only. They cannot measure hair
 matte quality, tile seams for the real ViTMatte model, ONNX parity, or memory
 and speed.
 
-Next, after checkpoint and dataset terms are reviewed, add a local-only
-checkpoint hash gate and dynamic ONNX exporter, compare outputs against the
-pinned PyTorch checkpoint on synthetic and licensed matte fixtures, and run
+Next, use the authorized local checkpoint with a hash gate and dynamic ONNX
+exporter, compare outputs against the pinned PyTorch checkpoint on synthetic
+and authorized matte fixtures, and run
 fresh-process tile sweeps at 512/768/1024. Record tile-level and full subject
 stage RSS, cgroup peak, latency, max/mean/p99 alpha error, and seam-region
 metrics. No complete 4 GiB or 2 GiB Laika pipeline claim follows from the

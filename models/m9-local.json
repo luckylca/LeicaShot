@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "m9-series-3.0-epoch11",
+  "name": "M9 series 3.0 epoch11",
+  "artifact": "leica-m9-v3-epoch11.fp16.onnx",
+  "availability": "user-provided-local-asset",
+  "expected_bytes": 10053669,
+  "sha256": "8936b8c86656265ab07c30b9b4cbbd7fa195d6e44cb3be1d4fd059bb36781e33",
+  "source_checkpoint_sha256": "8456c139e98ce98ac8742a5d20bc1a65a0315f85f13ad37c02cb708af1c337c6",
+  "reference_repository": "https://github.com/shuncongci/homemade-legendary-moment",
+  "reference_revision": "f012dca8a845b8c37389345676e43a7e99a5ae93",
+  "reference_model_record": "models.json",
+  "contract": {
+    "input_name": "input",
+    "output_name": "output",
+    "layout": "NCHW RGB",
+    "input_dtype": "float32",
+    "output_dtype": "float32",
+    "internal_precision": "float16",
+    "input_range": [-1, 1],
+    "output_range": [-1, 1],
+    "inference_long_edge": 1024
+  },
+  "authorization": {
+    "project_use": "User-confirmed authorization on 2026-10-22",
+    "reference_license_note": "The reference repository license states personal non-commercial terms for its original material and M9.",
+    "public_redistribution": "not asserted; keep the model file out of public Git and use a locally supplied asset"
+  },
+  "status": "sha256-verified-and-cpu-inference-validated"
+}

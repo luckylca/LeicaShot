@@ -2,7 +2,7 @@
 
 ## Current status
 
-This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has a CPU depth adapter in `laika.depth` and a `laika depth` CLI command with the reference max-edge sizing profile and an explicit upstream lower-bound profile. SAM 2.1 prompt preparation/selection, an experimental caller-supplied ViTMatte CPU/tile adapter, and native Lab detail-fusion postprocessing are in progress. AI color prediction, neural bokeh, complete subject workflow, GAIC composition, HTTP tasks, and the complete image pipeline remain unimplemented.
+This is an independent Python project. M0 established packaging, CI, safe image I/O, and repeatable process-tree measurements. M1 validated Depth Anything V2 Small model acquisition and static/dynamic ONNX export, then tested exact global query chunking. M2 has a CPU depth adapter in `laika.depth` and a `laika depth` CLI command. The M9 series 3.0 epoch11 ONNX adapter in `laika.m9` now drives reference-style Lab detail fusion through the `laika color` CLI and Python engine. SAM 2.1 prompt preparation/selection and an experimental caller-supplied ViTMatte CPU/tile adapter are available. Neural bokeh, complete subject workflow, GAIC composition, HTTP tasks, and the unified full image pipeline remain in progress.
 
 ## Target boundaries
 
@@ -32,7 +32,7 @@ The current depth adapter accepts caller-owned HWC `uint8` RGB arrays and return
 
 The subject path currently exposes SAM preprocessing, prompt-mask selection, and ellipse trimap generation. `laika.matting` packs an RGB/trimap tensor at a multiple of 32 and exposes an optional CPU ONNX adapter plus 512/768/1024 overlapping matte tiles. It is a low-level experimental component: no ViTMatte checkpoint is verified or distributed, and no end-to-end subject quality or memory result is available. See the [ViTMatte study](research/vitmatte-integration.md).
 
-`laika.color.fuse_lab_detail` fuses a caller-provided predicted RGB image with original detail in OpenCV Lab space. Its row-streamed variant uses Gaussian halos and matches the full-frame output exactly on synthetic tests. Three fresh-worker Mac measurements on synthetic 4K arrays found an 11.2% median RSS reduction at 512-row chunks with 34.4% longer fusion time; resolution-specific results are in the [Lab fusion report](benchmarks/m3-lab-fusion-row-streaming-2026-10-21.md). No color prediction model is included.
+`laika.m9.M9ColorEngine` performs hash-verified CPU M9 inference and feeds its 8-bit RGB output to `laika.color.fuse_lab_detail`. Low Memory closes the ONNX session before the full-resolution source is decoded for fusion; Balanced retains a reusable session. Both keep the oriented source's output dimensions and use 1024 only as the model working long edge. Row-streamed fusion matches full-height output exactly on a 22 MP photo; the [M9 benchmark report](benchmarks/m4-m9-inference-2026-10-22.md) records its CPU timing, process-tree RSS, numerical error, and current cgroup limitation.
 
 ## Memory-first execution plan
 
