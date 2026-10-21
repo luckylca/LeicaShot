@@ -106,6 +106,28 @@ def test_depth_cli_rejects_pathological_network_aspect_ratio_before_loading_mode
         output=str(tmp_path / "depth.npy"),
         model=str(tmp_path / "missing.onnx"),
         input_size=518,
+        analysis_max_edge=None,
+        threads=1,
+        max_upload_bytes=1024 * 1024,
+        max_pixels=40_000_000,
+        max_network_pixels=1_000_000,
+    )
+
+    with pytest.raises(ImageLimitError, match="network input exceeds"):
+        _run_depth(args)
+
+
+def test_reference_cli_caps_analysis_and_network_pixel_budgets_before_model_load(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "square.png"
+    Image.new("RGB", (4000, 4000), (10, 20, 30)).save(source)
+    args = Namespace(
+        input=str(source),
+        output=str(tmp_path / "depth.npy"),
+        model=str(tmp_path / "missing.onnx"),
+        input_size=None,
+        analysis_max_edge=None,
         threads=1,
         max_upload_bytes=1024 * 1024,
         max_pixels=40_000_000,

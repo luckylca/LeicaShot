@@ -55,3 +55,10 @@
 - Exported query chunks 16, 32, 64, and 128; each retained 12 global-attention loop nodes, matched unmodified PyTorch attention, and passed four dynamic-shape ONNX checks.
 - On the Linux runner, direct-model RSS was 869,384,192–878,256,128 B for chunks 16–128 versus 1,806,860,288 B baseline. Chunk 32 had the lowest direct RSS; chunk 128 had the shortest measured inference. At 4K CLI output, q128 had the lowest of the measured RSS values (510,701,568 B), while q64 had the shortest wall time (4.388 s); q16 was slowest.
 - Mac and Linux rankings differ. The Linux cgroup limit remained `max`; keep the chunk configurable until memory-capped and full-pipeline results exist. See the [M3 chunk-sweep report](benchmarks/m3-depth-attention-chunk-sweep-2026-10-21.md).
+
+## 2026-10-21 — reference depth analysis sizing
+
+- Implemented the reference's 1220-pixel maximum analysis edge, no-upscale behavior, Pillow-compatible bicubic resize, right/bottom replicate padding to 14-pixel patch alignment, and crop-before-full-size-restore path. The upstream lower-bound resize remains available explicitly with `--input-size 518`.
+- Added geometry, padding, preprocessing, CLI budget, and PyTorch/ONNX parity coverage. The optional model workflow checks both profiles, odd-edge padding, and a 4K source.
+- Compared the full-attention graph and q128 graph on three fresh Mac M1 workers each using seeded 3840×2160 RGB inputs and the current reference profile (analysis 1220×686, network 1232×686, full 3840×2160 output). Median RSS was 1,179,484,160 B (1,124.8 MiB) baseline and 742,752,256 B (708.3 MiB) q128, 37.0% lower. Median wall time was 10.479 s and 9.735 s; this small sample is not a CPU speed guarantee.
+- q128 output matched pinned PyTorch at the same prepared tensor with max/mean/p99 error `8.11e-6` / `2.84e-6` / `5.01e-6`; full output shape and finiteness were checked. These are synthetic, single-stage measurements on an unconstrained Mac process, not a real-photo or complete-pipeline 4/2 GiB result. See the [reference sizing report](benchmarks/m3-reference-depth-analysis-sizing-2026-10-21.md).

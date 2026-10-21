@@ -47,12 +47,22 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     rgb = np.random.default_rng(args.seed).integers(
         0, 256, (args.height, args.width, 3), dtype=np.uint8
     )
-    actual_tensor, network_width, network_height = _preprocess_rgb(
-        rgb, args.input_size, cv2, np, 4_000_000
+    input_size = args.input_size
+    max_analysis_edge = args.analysis_max_edge
+    if input_size is None and max_analysis_edge is None:
+        max_analysis_edge = 1220
+    actual_tensor, geometry = _preprocess_rgb(
+        rgb,
+        input_size,
+        cv2,
+        np,
+        4_000_000,
+        max_analysis_edge=max_analysis_edge,
     )
     with DepthAnythingV2Small(
         args.onnx,
-        input_size=args.input_size,
+        input_size=input_size,
+        max_analysis_edge=max_analysis_edge,
         intra_op_num_threads=args.threads,
     ) as depth_engine:
         actual = depth_engine.infer_rgb(rgb)
@@ -67,23 +77,29 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
     model.load_state_dict(checkpoint, strict=True)
     del checkpoint
     model.eval()
-    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    preprocess_stats = None
     with torch.inference_mode():
-        reference_tensor, (source_height, source_width) = model.image2tensor(
-            bgr, args.input_size
-        )
-        reference_tensor = reference_tensor.cpu()
-        preprocess_difference = np.abs(reference_tensor.numpy() - actual_tensor)
-        preprocess_stats = {
-            "max": float(preprocess_difference.max()),
-            "mean": float(preprocess_difference.mean()),
-            "p99": float(np.quantile(preprocess_difference, 0.99)),
-        }
-        del preprocess_difference
+        source_height, source_width = rgb.shape[:2]
+        if input_size is not None:
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            reference_tensor, _ = model.image2tensor(bgr, input_size)
+            reference_tensor = reference_tensor.cpu()
+            preprocess_difference = np.abs(reference_tensor.numpy() - actual_tensor)
+            preprocess_stats = {
+                "max": float(preprocess_difference.max()),
+                "mean": float(preprocess_difference.mean()),
+                "p99": float(np.quantile(preprocess_difference, 0.99)),
+            }
+            del preprocess_difference, bgr
+        else:
+            reference_tensor = torch.from_numpy(actual_tensor)
         network_depth = model(reference_tensor)
+        analysis_depth = network_depth[
+            :, : geometry.analysis_height, : geometry.analysis_width
+        ]
         reference_depth = (
             functional.interpolate(
-                network_depth[:, None],
+                analysis_depth[:, None],
                 (source_height, source_width),
                 mode="bilinear",
                 align_corners=True,
@@ -99,24 +115,43 @@ def _validate(args: argparse.Namespace) -> dict[str, Any]:
         "weights_sha256": artifact.sha256,
         "onnx_sha256": _sha256(args.onnx),
         "input_rgb_shape": list(rgb.shape),
-        "network_shape": [network_height, network_width],
+        "analysis_shape": [geometry.analysis_height, geometry.analysis_width],
+        "network_shape": [geometry.network_height, geometry.network_width],
         "output_shape": list(actual.depth.shape),
-        "preprocess_max_absolute_error": preprocess_stats["max"],
-        "preprocess_mean_absolute_error": preprocess_stats["mean"],
-        "preprocess_p99_absolute_error": preprocess_stats["p99"],
+        "preprocessing_profile": (
+            "upstream-lower-bound" if input_size is not None else "max-analysis-edge"
+        ),
+        "preprocessing_reference": (
+            "pinned-upstream-image2tensor"
+            if preprocess_stats is not None
+            else "identical prepared tensor for PyTorch and ONNX"
+        ),
         "depth_max_absolute_error": float(error.max()),
         "depth_mean_absolute_error": float(error.mean()),
         "depth_p99_absolute_error": float(np.quantile(error, 0.99)),
         "max_absolute_error_limit": args.max_abs_error,
         "all_finite": bool(np.isfinite(actual.depth).all()),
     }
+    if preprocess_stats is not None:
+        report.update(
+            {
+                "preprocess_max_absolute_error": preprocess_stats["max"],
+                "preprocess_mean_absolute_error": preprocess_stats["mean"],
+                "preprocess_p99_absolute_error": preprocess_stats["p99"],
+            }
+        )
     if (
-        report["preprocess_max_absolute_error"] > args.preprocess_error_limit
+        (
+            preprocess_stats is not None
+            and report["preprocess_max_absolute_error"] > args.preprocess_error_limit
+        )
         or report["depth_max_absolute_error"] > args.max_abs_error
         or not report["all_finite"]
         or tuple(actual.depth.shape) != (args.height, args.width)
+        or (actual.analysis_height, actual.analysis_width)
+        != (geometry.analysis_height, geometry.analysis_width)
         or (actual.network_height, actual.network_width)
-        != (network_height, network_width)
+        != (geometry.network_height, geometry.network_width)
     ):
         raise DepthInferenceError(
             "Laika depth adapter failed its PyTorch input/output comparison: "
@@ -132,7 +167,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--onnx", type=Path, required=True)
     parser.add_argument("--width", type=int, default=700)
     parser.add_argument("--height", type=int, default=400)
-    parser.add_argument("--input-size", type=int, default=518)
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument("--analysis-max-edge", type=int)
+    size_group.add_argument("--input-size", type=int)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20261021)
     # OpenCV's bicubic float path differs slightly between CPU architectures;

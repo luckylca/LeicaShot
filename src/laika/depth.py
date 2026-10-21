@@ -23,10 +23,22 @@ class DepthPrediction:
     depth: Any
     source_width: int
     source_height: int
+    analysis_width: int
+    analysis_height: int
     network_width: int
     network_height: int
     stage_seconds: dict[str, float]
     total_seconds: float
+
+
+@dataclass(frozen=True)
+class DepthInputGeometry:
+    """Analysis raster and padded tensor dimensions for one source image."""
+
+    analysis_width: int
+    analysis_height: int
+    network_width: int
+    network_height: int
 
 
 def _sha256(path: Path) -> str:
@@ -63,13 +75,72 @@ def depth_network_size(
     return network_width, network_height
 
 
+def depth_analysis_size(
+    source_width: int, source_height: int, max_analysis_edge: int = 1220
+) -> tuple[int, int]:
+    """Cap the longer analysis edge without enlarging small source images."""
+    if source_width < 1 or source_height < 1 or max_analysis_edge < 1:
+        raise ValueError("source dimensions and maximum analysis edge must be positive")
+    source_edge = max(source_width, source_height)
+    if source_edge <= max_analysis_edge:
+        return source_width, source_height
+
+    def fit(value: int) -> int:
+        return max(1, (value * max_analysis_edge + source_edge // 2) // source_edge)
+
+    return fit(source_width), fit(source_height)
+
+
+def depth_input_geometry(
+    source_width: int,
+    source_height: int,
+    *,
+    input_size: int | None = None,
+    max_analysis_edge: int | None = None,
+) -> DepthInputGeometry:
+    """Return analysis and network dimensions for one explicit sizing policy.
+
+    ``input_size`` selects the upstream model's lower-bound resize. Otherwise,
+    the source-reference max-edge analysis policy is used (1220 by default),
+    with right/bottom replication padding to the patch multiple of 14.
+    """
+    if input_size is not None and max_analysis_edge is not None:
+        raise ValueError("choose either input_size or max_analysis_edge")
+    if input_size is not None:
+        network_width, network_height = depth_network_size(
+            source_width, source_height, input_size
+        )
+        return DepthInputGeometry(
+            analysis_width=network_width,
+            analysis_height=network_height,
+            network_width=network_width,
+            network_height=network_height,
+        )
+
+    if max_analysis_edge is None:
+        max_analysis_edge = 1220
+    analysis_width, analysis_height = depth_analysis_size(
+        source_width, source_height, max_analysis_edge
+    )
+    network_width = ((analysis_width + 13) // 14) * 14
+    network_height = ((analysis_height + 13) // 14) * 14
+    return DepthInputGeometry(
+        analysis_width=analysis_width,
+        analysis_height=analysis_height,
+        network_width=network_width,
+        network_height=network_height,
+    )
+
+
 def _preprocess_rgb(
     rgb: Any,
-    input_size: int,
+    input_size: int | None,
     cv2: Any,
     np: Any,
     max_network_pixels: int,
-) -> tuple[Any, int, int]:
+    *,
+    max_analysis_edge: int | None = None,
+) -> tuple[Any, DepthInputGeometry]:
     if max_network_pixels < 1:
         raise ValueError("network pixel budget must be positive")
     image = np.asarray(rgb)
@@ -79,9 +150,16 @@ def _preprocess_rgb(
     if source_height < 1 or source_width < 1:
         raise ValueError("RGB dimensions must be positive")
 
-    network_width, network_height = depth_network_size(
-        source_width, source_height, input_size
+    geometry = depth_input_geometry(
+        source_width,
+        source_height,
+        input_size=input_size,
+        max_analysis_edge=max_analysis_edge,
     )
+    analysis_width = geometry.analysis_width
+    analysis_height = geometry.analysis_height
+    network_width = geometry.network_width
+    network_height = geometry.network_height
     if network_width * network_height > max_network_pixels:
         raise ValueError(
             "network input exceeds the configured pixel budget; "
@@ -92,23 +170,57 @@ def _preprocess_rgb(
     tensor = np.empty(
         (1, 3, network_height, network_width), dtype=np.float32, order="C"
     )
-    same_size = (network_width, network_height) == (source_width, source_height)
+    lower_bound_profile = input_size is not None
+    if lower_bound_profile:
+        resized_rgb = image
+    elif (analysis_width, analysis_height) == (source_width, source_height):
+        resized_rgb = image
+    else:
+        from PIL import Image
+
+        source_pil = Image.fromarray(image, mode="RGB")
+        try:
+            resized_pil = source_pil.resize(
+                (analysis_width, analysis_height),
+                resample=Image.Resampling.BICUBIC,
+            )
+        finally:
+            source_pil.close()
+        try:
+            resized_rgb = np.array(resized_pil, dtype=np.uint8, copy=True)
+        finally:
+            resized_pil.close()
+
     for channel in range(3):
-        plane = image[:, :, channel].astype(np.float32)
+        plane = resized_rgb[:, :, channel].astype(np.float32)
         np.divide(plane, np.float32(255.0), out=plane)
-        if same_size:
-            resized = plane
-        else:
+        if lower_bound_profile and (network_width, network_height) != (
+            source_width,
+            source_height,
+        ):
             resized = cv2.resize(
                 plane,
                 (network_width, network_height),
                 interpolation=cv2.INTER_CUBIC,
             )
             del plane
+        else:
+            resized = plane
         resized -= mean[channel]
         resized /= std[channel]
-        tensor[0, channel] = resized
-    return tensor, network_width, network_height
+        tensor[0, channel, :analysis_height, :analysis_width] = resized
+        if network_height > analysis_height:
+            tensor[0, channel, analysis_height:, :analysis_width] = tensor[
+                0, channel, analysis_height - 1 : analysis_height, :analysis_width
+            ]
+        if network_width > analysis_width:
+            tensor[0, channel, :network_height, analysis_width:] = tensor[
+                0, channel, :network_height, analysis_width - 1 : analysis_width
+            ]
+        del resized
+    if resized_rgb is not image:
+        del resized_rgb
+    return tensor, geometry
 
 
 def resize_bilinear_align_corners(
@@ -178,13 +290,20 @@ class DepthAnythingV2Small:
         self,
         model_path: str | os.PathLike[str],
         *,
-        input_size: int = 518,
+        input_size: int | None = None,
+        max_analysis_edge: int | None = None,
         intra_op_num_threads: int = 1,
         max_source_pixels: int = 40_000_000,
         max_network_pixels: int = 4_000_000,
     ) -> None:
-        if input_size < 518 or input_size % 14:
+        if input_size is not None and max_analysis_edge is not None:
+            raise ValueError("choose either input_size or max_analysis_edge")
+        if input_size is None and max_analysis_edge is None:
+            max_analysis_edge = 1220
+        if input_size is not None and (input_size < 518 or input_size % 14):
             raise ValueError("input_size must be at least 518 and divisible by 14")
+        if max_analysis_edge is not None and max_analysis_edge < 1:
+            raise ValueError("max_analysis_edge must be positive")
         if intra_op_num_threads < 1 or max_source_pixels < 1 or max_network_pixels < 1:
             raise ValueError("thread and pixel limits must be positive")
         try:
@@ -199,6 +318,7 @@ class DepthAnythingV2Small:
 
         self.model_path = Path(model_path)
         self.input_size = input_size
+        self.max_analysis_edge = max_analysis_edge
         self.max_source_pixels = max_source_pixels
         self.max_network_pixels = max_network_pixels
         self._cv2 = cv2
@@ -271,13 +391,16 @@ class DepthAnythingV2Small:
         started = time.perf_counter()
         stage_seconds: dict[str, float] = {}
         stage_started = time.perf_counter()
-        tensor, network_width, network_height = _preprocess_rgb(
+        tensor, geometry = _preprocess_rgb(
             image,
             self.input_size,
             self._cv2,
             np,
             self.max_network_pixels,
+            max_analysis_edge=self.max_analysis_edge,
         )
+        network_width = geometry.network_width
+        network_height = geometry.network_height
         if self._model_input_shape is not None:
             for axis, actual in ((2, network_height), (3, network_width)):
                 declared = self._model_input_shape[axis]
@@ -303,13 +426,20 @@ class DepthAnythingV2Small:
             )
 
         stage_started = time.perf_counter()
-        depth = resize_bilinear_align_corners(raw_depth[0], source_height, source_width)
+        analysis_depth = raw_depth[
+            0, : geometry.analysis_height, : geometry.analysis_width
+        ]
+        depth = resize_bilinear_align_corners(
+            analysis_depth, source_height, source_width
+        )
         del raw_depth, tensor
         stage_seconds["restore_size"] = time.perf_counter() - stage_started
         return DepthPrediction(
             depth=depth,
             source_width=source_width,
             source_height=source_height,
+            analysis_width=geometry.analysis_width,
+            analysis_height=geometry.analysis_height,
             network_width=network_width,
             network_height=network_height,
             stage_seconds=stage_seconds,

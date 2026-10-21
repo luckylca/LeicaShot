@@ -58,11 +58,16 @@ def _measure(args: argparse.Namespace) -> dict[str, Any]:
             str(output_path),
             "--model",
             str(model),
-            "--input-size",
-            str(args.input_size),
             "--threads",
             str(args.threads),
         ]
+        if args.input_size is not None:
+            command.extend(("--input-size", str(args.input_size)))
+        else:
+            max_edge = (
+                1220 if args.analysis_max_edge is None else args.analysis_max_edge
+            )
+            command.extend(("--analysis-max-edge", str(max_edge)))
         process = subprocess.Popen(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
@@ -113,6 +118,10 @@ def _measure(args: argparse.Namespace) -> dict[str, Any]:
         "threads": args.threads,
         "seed": args.seed,
         "input_shape": [args.height, args.width, 3],
+        "analysis_shape": [
+            engine_result["analysis_height"],
+            engine_result["analysis_width"],
+        ],
         "network_shape": [
             engine_result["network_height"],
             engine_result["network_width"],
@@ -147,7 +156,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--width", type=int, default=1400)
     parser.add_argument("--height", type=int, default=518)
-    parser.add_argument("--input-size", type=int, default=518)
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument("--analysis-max-edge", type=int)
+    size_group.add_argument("--input-size", type=int)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--seed", type=int, default=20261021)
     parser.add_argument("--sample-interval-ms", type=int, default=5)

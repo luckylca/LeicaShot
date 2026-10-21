@@ -12,7 +12,11 @@ from typing import Any
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from laika.depth import DepthAnythingV2Small, DepthInferenceError, depth_network_size
+from laika.depth import (
+    DepthAnythingV2Small,
+    DepthInferenceError,
+    depth_input_geometry,
+)
 from laika.engine import ImageInputError, ImageLimitError, process_image
 
 SUPPORTED_INPUT_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
@@ -34,7 +38,17 @@ def build_parser() -> argparse.ArgumentParser:
     depth_parser.add_argument(
         "--model", required=True, help="validated dynamic ONNX path"
     )
-    depth_parser.add_argument("--input-size", type=int, default=518)
+    depth_size = depth_parser.add_mutually_exclusive_group()
+    depth_size.add_argument(
+        "--analysis-max-edge",
+        type=int,
+        help="reference analysis long-edge cap (default: 1220, no upscale)",
+    )
+    depth_size.add_argument(
+        "--input-size",
+        type=int,
+        help="use the upstream lower-bound policy with this minimum side",
+    )
     depth_parser.add_argument("--threads", type=int, default=1)
     depth_parser.add_argument("--max-upload-bytes", type=int, default=50 * 1024 * 1024)
     depth_parser.add_argument("--max-pixels", type=int, default=40_000_000)
@@ -148,12 +162,15 @@ def _run_depth(args: argparse.Namespace) -> int:
         max_bytes=args.max_upload_bytes,
         max_pixels=args.max_pixels,
     )
-    network_width, network_height = depth_network_size(
-        rgb.shape[1], rgb.shape[0], args.input_size
+    geometry = depth_input_geometry(
+        rgb.shape[1],
+        rgb.shape[0],
+        input_size=args.input_size,
+        max_analysis_edge=args.analysis_max_edge,
     )
     if args.max_network_pixels < 1:
         raise ValueError("network pixel limit must be positive")
-    if network_width * network_height > args.max_network_pixels:
+    if geometry.network_width * geometry.network_height > args.max_network_pixels:
         raise ImageLimitError(
             "network input exceeds the configured pixel limit; increase the "
             "explicit limit or reduce the requested input size"
@@ -161,6 +178,7 @@ def _run_depth(args: argparse.Namespace) -> int:
     with DepthAnythingV2Small(
         args.model,
         input_size=args.input_size,
+        max_analysis_edge=args.analysis_max_edge,
         intra_op_num_threads=args.threads,
         max_source_pixels=args.max_pixels,
         max_network_pixels=args.max_network_pixels,
@@ -173,6 +191,8 @@ def _run_depth(args: argparse.Namespace) -> int:
                 "output": str(output_path),
                 "source_width": prediction.source_width,
                 "source_height": prediction.source_height,
+                "analysis_width": prediction.analysis_width,
+                "analysis_height": prediction.analysis_height,
                 "network_width": prediction.network_width,
                 "network_height": prediction.network_height,
                 "depth_dtype": str(prediction.depth.dtype),
