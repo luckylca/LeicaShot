@@ -49,3 +49,9 @@
 - Ran three fresh CPU CLI workers per graph on synthetic 3840×2160 RGB input. Both returned a full-size 2160×3840 float32 depth map (33,177,728 bytes); the pinned resize rule used a 518×924 network raster. A q128 run against the PyTorch reference at this full source size had max depth error `6.91e-5` (limit `1e-4`) and a finite full-size map.
 - On the 8 GiB M1, median worker RSS was 762.2 MiB for the full-attention graph and 598.4 MiB for q128 (21.5% lower). Median wall times were 4.437 s and 4.399 s, too close and too few trials for a speed conclusion.
 - Added these exact 4K source dimensions to the opt-in Linux model-smoke workflow. Its first Ubuntu 24.04 run also returned full-size maps and measured one worker at 731,766,784 B baseline RSS and 556,109,824 B q128 RSS; cgroup `memory.max` was `max`. The experiment is synthetic, has no memory limit, and does not establish full-pipeline or 4/2 GiB behavior. See the [M3 high-resolution report](benchmarks/m3-high-resolution-depth-2026-10-21.md).
+
+## 2026-10-21 — M3 attention chunk-size sweep
+
+- Exported query chunks 16, 32, 64, and 128; each retained 12 global-attention loop nodes, matched unmodified PyTorch attention, and passed four dynamic-shape ONNX checks.
+- On the Linux runner, direct-model RSS was 869,384,192–878,256,128 B for chunks 16–128 versus 1,806,860,288 B baseline. Chunk 32 had the lowest direct RSS; chunk 128 had the shortest measured inference. At 4K CLI output, q128 had the lowest of the measured RSS values (510,701,568 B), while q64 had the shortest wall time (4.388 s); q16 was slowest.
+- Mac and Linux rankings differ. The Linux cgroup limit remained `max`; keep the chunk configurable until memory-capped and full-pipeline results exist. See the [M3 chunk-sweep report](benchmarks/m3-depth-attention-chunk-sweep-2026-10-21.md).
