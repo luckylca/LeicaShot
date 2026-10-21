@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from laika.color import fuse_lab_detail
+from laika.color import fuse_lab_detail, fuse_lab_detail_to_sink
 
 
 def reference_blur_difference(
@@ -50,6 +50,25 @@ def test_streamed_row_halos_match_full_frame_filter(row_chunk_height: int) -> No
     )
 
     np.testing.assert_array_equal(streamed, whole)
+
+
+def test_fusion_sink_matches_array_output_without_changing_inputs() -> None:
+    original, predicted = synthetic_photos(83, 171)
+    expected = fuse_lab_detail(original, predicted, row_chunk_height=47)
+    actual = np.empty_like(expected)
+    next_row = 0
+
+    def collect(row_start: int, rows: np.ndarray) -> None:
+        nonlocal next_row
+        assert row_start == next_row
+        actual[row_start : row_start + rows.shape[0]] = rows
+        next_row += rows.shape[0]
+
+    seconds = fuse_lab_detail_to_sink(original, predicted, collect, row_chunk_height=47)
+
+    np.testing.assert_array_equal(actual, expected)
+    assert next_row == original.shape[0]
+    assert seconds >= 0
 
 
 def test_lab_fusion_tracks_two_blur_reference_and_preserves_inputs() -> None:

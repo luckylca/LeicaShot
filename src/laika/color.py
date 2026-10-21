@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -30,6 +31,65 @@ def fuse_lab_detail(
     result matches a full-frame filter while bounding temporary Lab/float data.
     The returned RGB array is newly allocated; inputs are unchanged.
     """
+    cv2, np, original, predicted = _validated_inputs(
+        original_rgb, predicted_rgb, sigma_l, sigma_ab, row_chunk_height
+    )
+    height, width = original.shape[:2]
+    fused_rgb = np.empty((height, width, 3), dtype=np.uint8)
+    _fuse_to_sink(
+        cv2,
+        np,
+        original,
+        predicted,
+        sigma_l,
+        sigma_ab,
+        row_chunk_height,
+        cancel_check,
+        output=fused_rgb,
+    )
+    return fused_rgb
+
+
+def fuse_lab_detail_to_sink(
+    original_rgb: Any,
+    predicted_rgb: Any,
+    row_sink: Callable[[int, Any], None],
+    *,
+    sigma_l: float = 25.0,
+    sigma_ab: float = 20.0,
+    row_chunk_height: int = 512,
+    cancel_check: Callable[[], None] | None = None,
+) -> float:
+    """Fuse Lab detail and pass each completed RGB block to ``row_sink``.
+
+    No full-size RGB output is allocated. The return value measures fusion
+    compute time and excludes the time spent inside the sink callback.
+    """
+    cv2, np, original, predicted = _validated_inputs(
+        original_rgb, predicted_rgb, sigma_l, sigma_ab, row_chunk_height
+    )
+    if not callable(row_sink):
+        raise TypeError("row_sink must be callable")
+    return _fuse_to_sink(
+        cv2,
+        np,
+        original,
+        predicted,
+        sigma_l,
+        sigma_ab,
+        row_chunk_height,
+        cancel_check,
+        row_sink=row_sink,
+    )
+
+
+def _validated_inputs(
+    original_rgb: Any,
+    predicted_rgb: Any,
+    sigma_l: float,
+    sigma_ab: float,
+    row_chunk_height: int,
+) -> tuple[Any, Any, Any, Any]:
     try:
         import cv2
         import numpy as np
@@ -62,14 +122,30 @@ def fuse_lab_detail(
         or sigma_ab <= 0
     ):
         raise ValueError("Gaussian sigmas must be finite and positive")
+    return cv2, np, original, predicted
 
+
+def _fuse_to_sink(
+    cv2: Any,
+    np: Any,
+    original: Any,
+    predicted: Any,
+    sigma_l: float,
+    sigma_ab: float,
+    row_chunk_height: int,
+    cancel_check: Callable[[], None] | None,
+    *,
+    output: Any | None = None,
+    row_sink: Callable[[int, Any], None] | None = None,
+) -> float:
     height, width = original.shape[:2]
     sigmas = (sigma_l, sigma_ab, sigma_ab)
     halo = max(_gaussian_radius(sigma) for sigma in sigmas)
-    fused_lab = np.empty((height, width, 3), dtype=np.uint8)
+    compute_seconds = 0.0
     for row_start in range(0, height, row_chunk_height):
         if cancel_check is not None:
             cancel_check()
+        compute_started = time.perf_counter()
         row_stop = min(height, row_start + row_chunk_height)
         source_start = max(0, row_start - halo)
         source_stop = min(height, row_stop + halo)
@@ -80,6 +156,7 @@ def fuse_lab_detail(
         center_start = row_start - source_start
         center_stop = center_start + row_stop - row_start
         scratch = np.empty((source_stop - source_start, width), dtype=np.float32)
+        fused_lab_chunk = np.empty((row_stop - row_start, width, 3), dtype=np.uint8)
         for channel, sigma in enumerate(sigmas):
             np.subtract(
                 predicted_lab[:, :, channel],
@@ -96,14 +173,27 @@ def fuse_lab_detail(
             )
             np.add(scratch, source_lab[:, :, channel], out=scratch)
             np.clip(scratch, 0, 255, out=scratch)
-            fused_lab[row_start:row_stop, :, channel] = scratch[
-                center_start:center_stop
-            ].astype(np.uint8)
-        del source_lab, predicted_lab, scratch
+            fused_lab_chunk[:, :, channel] = scratch[center_start:center_stop].astype(
+                np.uint8
+            )
+        if output is not None:
+            cv2.cvtColor(
+                fused_lab_chunk,
+                cv2.COLOR_LAB2RGB,
+                dst=output[row_start:row_stop],
+            )
+        else:
+            rgb_chunk = cv2.cvtColor(fused_lab_chunk, cv2.COLOR_LAB2RGB)
+        compute_seconds += time.perf_counter() - compute_started
+        if row_sink is not None:
+            row_sink(row_start, rgb_chunk)
+        del source_lab, predicted_lab, scratch, fused_lab_chunk
+        if output is None:
+            del rgb_chunk
 
     if cancel_check is not None:
         cancel_check()
-    return cv2.cvtColor(fused_lab, cv2.COLOR_LAB2RGB)
+    return compute_seconds
 
 
-__all__ = ["fuse_lab_detail"]
+__all__ = ["fuse_lab_detail", "fuse_lab_detail_to_sink"]
