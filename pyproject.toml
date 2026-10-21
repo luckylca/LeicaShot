@@ -22,8 +22,11 @@ api = [
 inference = [
   "onnxruntime>=1.18",
   "numpy>=1.26",
+  "opencv-python-headless==5.0.0.93",
 ]
 dev = [
+  "numpy>=1.26",
+  "opencv-python-headless==5.0.0.93",
   "pytest>=8.0",
   "ruff>=0.6",
 ]

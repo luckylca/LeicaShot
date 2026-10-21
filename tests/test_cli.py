@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import psutil
@@ -10,6 +11,8 @@ import pytest
 from PIL import Image
 
 from laika.benchmark import measure_image
+from laika.cli import _read_rgb, _run_depth, _save_depth
+from laika.engine import ImageInputError, ImageLimitError
 
 
 def test_cli_calls_shared_engine_and_returns_json(tmp_path: Path) -> None:
@@ -52,3 +55,62 @@ def test_benchmark_samples_worker_memory_and_cpu(
     assert report["process_tree_peak_uss_bytes"] is None
     assert report["image"]["output_width"] == 8
     assert report["image"]["output_height"] == 6
+
+
+def test_depth_cli_decoder_applies_orientation_and_checks_limits(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "oriented.jpg"
+    image = Image.new("RGB", (17, 9), (23, 94, 175))
+    exif = image.getexif()
+    exif[274] = 6
+    image.save(source, quality=100, exif=exif)
+
+    rgb = _read_rgb(source, max_bytes=1024 * 1024, max_pixels=1_000)
+
+    assert rgb.shape == (17, 9, 3)
+    assert rgb.dtype.name == "uint8"
+    with pytest.raises(ImageLimitError, match="byte limit"):
+        _read_rgb(source, max_bytes=1, max_pixels=1_000)
+    with pytest.raises(ImageLimitError, match="pixel limit"):
+        _read_rgb(source, max_bytes=1024 * 1024, max_pixels=100)
+
+
+def test_depth_cli_decoder_uses_actual_image_format(tmp_path: Path) -> None:
+    mislabeled = tmp_path / "photo.jpg"
+    Image.new("RGB", (4, 3), (17, 22, 33)).save(mislabeled, format="BMP")
+
+    with pytest.raises(ImageInputError, match="unsupported decoded image format"):
+        _read_rgb(mislabeled, max_bytes=1024 * 1024, max_pixels=100)
+
+
+def test_depth_cli_writes_numpy_output_without_pickle(tmp_path: Path) -> None:
+    import numpy as np
+
+    output = tmp_path / "nested" / "depth.npy"
+    depth = np.arange(20, dtype=np.float32).reshape(4, 5)
+
+    _save_depth(output, depth)
+
+    np.testing.assert_array_equal(np.load(output, allow_pickle=False), depth)
+    assert not list(output.parent.glob("*.tmp"))
+
+
+def test_depth_cli_rejects_pathological_network_aspect_ratio_before_loading_model(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "extreme.png"
+    Image.new("RGB", (8_000, 1), (10, 20, 30)).save(source)
+    args = Namespace(
+        input=str(source),
+        output=str(tmp_path / "depth.npy"),
+        model=str(tmp_path / "missing.onnx"),
+        input_size=518,
+        threads=1,
+        max_upload_bytes=1024 * 1024,
+        max_pixels=40_000_000,
+        max_network_pixels=1_000_000,
+    )
+
+    with pytest.raises(ImageLimitError, match="network input exceeds"):
+        _run_depth(args)

@@ -98,20 +98,27 @@ def _worker(args: argparse.Namespace) -> dict[str, Any]:
         if not args.onnx.is_file():
             raise ValueError(f"ONNX model is unavailable: {args.onnx}")
         if args.query_chunk_size is not None:
+            from export_depth_anything_v2 import _sha256
+
+            report_path = Path(f"{args.onnx}.validation.json")
             try:
-                import onnx
-            except ImportError as exc:
+                export_report = json.loads(report_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
                 raise ValueError(
-                    "validating a query-chunked graph requires the ONNX package"
+                    "query-chunked ONNX benchmark requires its export report"
                 ) from exc
-            graph = onnx.load(str(args.onnx), load_external_data=False)
-            loop_nodes = sum(node.op_type == "Loop" for node in graph.graph.node)
-            if loop_nodes != 12:
+            if (
+                export_report.get("onnx_sha256") != _sha256(args.onnx)
+                or export_report.get("attention_query_chunk_size")
+                != args.query_chunk_size
+                or export_report.get("onnx_top_level_loop_nodes") != 12
+            ):
                 raise ValueError(
-                    "query-chunked ONNX graph must contain 12 attention loops; "
-                    f"found {loop_nodes}"
+                    "ONNX export report does not verify the requested "
+                    "query-chunked graph"
                 )
-        from export_depth_anything_v2 import _sha256
+        else:
+            from export_depth_anything_v2 import _sha256
 
         provenance["onnx_sha256"] = _sha256(args.onnx)
         external_data = Path(f"{args.onnx}.data")
