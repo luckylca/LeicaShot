@@ -120,3 +120,91 @@ jobs:
               --model "$RUNNER_TEMP/depth-anything-v2-small-dynamic-q${chunk}.onnx" \
               --width 3840 --height 2160 --analysis-max-edge 1220 --threads 1
           done
+      - name: Build isolated Linux CPU benchmark image
+        run: |
+          mkdir -p "$RUNNER_TEMP/laika-depth-bench-context"
+          cat > "$RUNNER_TEMP/laika-depth-bench-context/Dockerfile" <<'EOF'
+          FROM python:3.11-slim-bookworm
+          RUN apt-get update \
+              && apt-get install -y --no-install-recommends libgomp1 \
+              && rm -rf /var/lib/apt/lists/*
+          RUN python -m pip install --no-cache-dir \
+              "numpy==2.4.6" "pillow>=10.3" "psutil>=5.9" \
+              "opencv-python-headless==5.0.0.93" "onnxruntime==1.31.0"
+          ENV PYTHONPATH=/workspace/src
+          ENV PYTHONDONTWRITEBYTECODE=1
+          WORKDIR /workspace
+          EOF
+          docker build \
+            --file "$RUNNER_TEMP/laika-depth-bench-context/Dockerfile" \
+            --tag laika-depth-bench:cpu \
+            "$RUNNER_TEMP/laika-depth-bench-context"
+      - name: Measure depth workers under 4 GiB and 2 GiB cgroup limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/laika-depth-cgroup-reports"
+          for budget in 4g 2g; do
+            if [[ "$budget" == "4g" ]]; then
+              expected_limit=4294967296
+            else
+              expected_limit=2147483648
+            fi
+            for graph in dynamic dynamic-q128; do
+              for trial in 1 2 3; do
+                report="$RUNNER_TEMP/laika-depth-cgroup-reports/${budget}-${graph}-trial${trial}.json"
+                docker run --rm \
+                  --memory="$budget" \
+                  --memory-swap="$budget" \
+                  --cpus=2 \
+                  --network=none \
+                  --read-only \
+                  --tmpfs /tmp:rw,nosuid,nodev,size=512m \
+                  --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+                  --mount "type=bind,src=$RUNNER_TEMP,dst=/models,readonly" \
+                  --workdir /workspace \
+                  laika-depth-bench:cpu \
+                  python scripts/benchmark_depth_cgroup.py \
+                    --model "/models/depth-anything-v2-small-${graph}.onnx" \
+                    --width 3840 --height 2160 --analysis-max-edge 1220 --threads 1 \
+                  > "$report"
+                python - "$report" "$expected_limit" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as stream:
+              report = json.load(stream)
+          expected_limit = int(sys.argv[2])
+          cgroup = report.get("cgroup_v2_after")
+          if not cgroup or cgroup.get("limit_bytes") != expected_limit:
+              raise SystemExit(f"expected cgroup memory.max={expected_limit}: {cgroup}")
+          peak = cgroup.get("peak_bytes")
+          if not isinstance(peak, int) or peak <= 0 or peak > expected_limit:
+              raise SystemExit(f"invalid cgroup peak under limit: {peak}")
+          if report.get("outcome") not in {"success", "oom"}:
+              raise SystemExit(f"benchmark failed without a cgroup OOM event: {report}")
+          benchmark = report.get("benchmark") or {}
+          if report["outcome"] == "success" and benchmark.get("process_tree_peak_rss_bytes", 0) <= 0:
+              raise SystemExit("worker process-tree RSS was not measured")
+          print(json.dumps({
+              "outcome": report["outcome"],
+              "cgroup_limit_bytes": expected_limit,
+              "cgroup_peak_bytes": peak,
+              "process_tree_peak_rss_bytes": benchmark.get("process_tree_peak_rss_bytes"),
+              "worker_wall_seconds": benchmark.get("worker_wall_seconds"),
+              "analysis_shape": benchmark.get("analysis_shape"),
+              "network_shape": benchmark.get("network_shape"),
+              "output_shape": benchmark.get("output_shape"),
+              "model_sha256": (benchmark.get("model_sha256") or report.get("model_sha256")),
+          }, sort_keys=True))
+          PY
+              done
+            done
+          done
+      - name: Upload cgroup benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laika-depth-cgroup-benchmarks
+          path: ${{ runner.temp }}/laika-depth-cgroup-reports/*.json
+          if-no-files-found: ignore
