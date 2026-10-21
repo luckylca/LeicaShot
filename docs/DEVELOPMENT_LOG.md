@@ -74,3 +74,12 @@
 - Added q16/q32/q64 to the 4K Docker cgroup sweep. All 30 trials across full attention and q16/q32/q64/q128 under 4 GiB and 2 GiB completed with full finite output and zero OOM kills.
 - At 4 GiB, q32 had the lowest median cgroup peak (697,040,896 B / 664.8 MiB) while q128 had the shortest median inference (4.041 s). At 2 GiB, q128 had both the lowest median peak (703,885,312 B / 671.3 MiB) and shortest inference (4.011 s). q16 was slowest under both limits.
 - Keep the chunk profile configurable: its memory ranking varied with the limit, and these are synthetic depth-only tests on one runner. See the [cgroup chunk-sweep report](benchmarks/m3-depth-attention-cgroup-sweep-2026-10-21.md).
+
+## 2026-10-21 — SAM 2.1 Tiny provenance and embedding cache adapter
+
+- Verified and pinned the official SAM 2.1 Tiny checkpoint metadata: 156,008,466 bytes, SHA-256 `7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69`, checkpoint revision `36f406a75c9be63c7f429da63246273f028c6fd4`, and Meta source revision `2b90b9f5ceec907a1c18123530e92e794ad901a4`. The model card and pinned upstream license declare Apache-2.0.
+- Added an ONNX split-session inference adapter and byte-bounded LRU for the three SAM encoder feature tensors. It fingerprints the exact prepared input, reuses one image encoding across later prompts, and supports explicit invalidation and release.
+- Downloaded the official checkpoint to `/tmp/laika-models` and verified its byte count and SHA-256 through `laika-models verify`; no weights entered Git history.
+- Added a reproducible split-graph exporter that imports only the pinned Meta source and validates feature maps, mask logits, and scores against PyTorch. Added a fresh-worker benchmark for RSS/USS, CPU time, encoder/decoder latency, and cache reuse, plus a labeled GitHub Actions model-smoke job. The job has not yet run, so no SAM graph or performance result is claimed as validated.
+- Added mock-session coverage for cache hits, byte-budget eviction, lifecycle cleanup, prompt validation, and tensor shape checks. These tests exercise the adapter contract only; no SAM stage memory/time result is claimed.
+- Added the checkpoint to the external asset manifest. Its weights remain outside Git; the reference project's converted ONNX is not copied or used as a Laika validation artifact.

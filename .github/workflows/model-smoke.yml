@@ -9,6 +9,64 @@ permissions:
   contents: read
 
 jobs:
+  sam2-1-hiera-tiny:
+    name: SAM 2.1 Hiera Tiny · split ONNX parity
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.labels.*.name, 'sam2-model-smoke'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned CPU export and inference toolchain
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple \
+            torch==2.14.1 torchvision==0.29.1
+          python -m pip install \
+            numpy==2.4.6 onnx==1.23.2 onnxruntime==1.31.0
+      - name: Checkout pinned official SAM 2 implementation
+        run: |
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/facebookresearch/sam2.git \
+            "$RUNNER_TEMP/sam2"
+          git -C "$RUNNER_TEMP/sam2" \
+            checkout 2b90b9f5ceec907a1c18123530e92e794ad901a4
+          SAM2_BUILD_CUDA=0 python -m pip install -e "$RUNNER_TEMP/sam2"
+          python -m pip install -e .
+      - name: Download and verify official SAM 2.1 Tiny checkpoint
+        run: |
+          laika-models fetch sam2.1-hiera-tiny \
+            --cache-dir "$RUNNER_TEMP/laika-models"
+      - name: Export split encoder/decoder and compare PyTorch with ONNX
+        run: |
+          python scripts/export_sam2_tiny_onnx.py \
+            --source-checkout "$RUNNER_TEMP/sam2" \
+            --weights "$RUNNER_TEMP/laika-models/sam2.1_hiera_tiny.pt" \
+            --output-dir "$RUNNER_TEMP/sam2-onnx" \
+            --threads 1 --max-abs-tolerance 0.001
+      - name: Measure cold SAM worker and cached prompt inference
+        run: |
+          python scripts/benchmark_sam2_inference.py \
+            --image-encoder "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny_image_encoder.onnx" \
+            --image-decoder "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny_image_decoder.onnx" \
+            --validation-report "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny.validation.json" \
+            --threads 1 --runs 3 \
+            --output "$RUNNER_TEMP/sam2-onnx/sam2.1_hiera_tiny.benchmark.json"
+      - name: Upload SAM validation and benchmark reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laika-sam2-onnx-validation-and-benchmark
+          path: ${{ runner.temp }}/sam2-onnx/*.json
+          if-no-files-found: ignore
+
   depth-anything-v2-small:
     name: Depth Anything V2 Small · CPU ONNX parity
     if: >-
