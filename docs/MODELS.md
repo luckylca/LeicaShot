@@ -17,7 +17,7 @@ Set `LAIKA_MODEL_CACHE` or pass `--cache-dir` to change the cache location. Down
 
 The converter uses the upstream model definition only from its manifest-pinned revision. It writes a graph, optional external tensor data, and a JSON validation report. It refuses to overwrite any of those files and checks framework and ONNX Runtime outputs on seeded synthetic tensors before publishing. By default the export is static; add `--dynamic` to use the validated dynamic-height/width path. That path requires each network dimension to be at least 518 and divisible by 14; the inference engine must enforce those conditions before invoking ONNX Runtime.
 
-For the experimental DINO attention optimization, add `--query-chunk-size 128` together with `--dynamic`. Each query tile attends across all keys and values. The exporter checks equality against the unchunked PyTorch model and verifies that the ONNX graph retains its 12 loop nodes; it rejects chunked exports that lose this control flow. On the tested M1, chunk size 128 cut single-stage RSS by 61% with a 3.6% median latency increase at 1400×518. See the [query-chunking report](benchmarks/m1-depth-query-chunking-2026-10-21.md); this remains experimental and is not yet part of the production engine.
+For the experimental DINO attention optimization, add `--query-chunk-size 128` together with `--dynamic`. Each query tile attends across all keys and values. The exporter checks equality against the unchunked PyTorch model and verifies that the ONNX graph retains its 12 loop nodes; it rejects chunked exports that lose this control flow. The corrected direct model benchmark and the full CLI image-to-depth comparison are recorded separately in the [query-chunking report](benchmarks/m1-depth-query-chunking-2026-10-21.md) and [M2 inference report](benchmarks/m2-depth-inference-2026-10-21.md). This remains experimental and is not yet part of the production edit pipeline.
 
 ```bash
 git clone --filter=blob:none --no-checkout \
@@ -57,3 +57,24 @@ Use a separate virtual environment for this large conversion toolchain. The exac
 GitHub Actions provides an opt-in `Optional model smoke` workflow. Add the `model-smoke` label to a pull request to run it; it downloads and verifies this checkpoint, exports dynamic baseline and query-chunked CPU ONNX models, checks four input shapes, and prints PyTorch/ONNX process-tree benchmarks including baseline versus query-chunked 1400×518 runs. The Linux runner's cgroup has no configured memory limit, so its measurements do not represent a 4 GiB or 2 GiB test. Manual dispatch is available once the workflow is present on the repository's default branch. Regular cross-platform CI remains model-free.
 
 The M9 checkpoint remains excluded because its reference project license limits it to personal non-commercial use. ARNet and GAIC checkpoint permissions remain unresolved. The ViTMatte model card says Apache-2.0, while its Composition-1k training data requires separate license review before commercial use or redistribution. See the [reference study](research/reference-study.md).
+
+## CPU inference adapter and CLI
+
+Install the optional inference dependencies with `pip install -e '.[inference]'`. The `DepthAnythingV2Small` Python adapter accepts an HWC `uint8` RGB array and returns a float32 depth map at the same width and height. It applies EXIF orientation only when the caller decodes an image; `laika depth` handles orientation, format checks, upload-byte and pixel limits, and writes a NumPy `.npy` array atomically. Defaults cap uploads at 50 MiB, source images at 40 million pixels, and derived network rasters at 4 million pixels. Over-limit requests fail instead of silently changing analysis dimensions. The adapter accepts only dynamic exports with a matching `.onnx.validation.json` report and graph SHA-256. The session uses CPUExecutionProvider and releases its native buffers on `close()` or context exit.
+
+```python
+import numpy as np
+from laika.depth import DepthAnythingV2Small
+
+rgb: np.ndarray  # H×W×3 uint8, RGB order
+with DepthAnythingV2Small("/path/to/depth.onnx") as depth_model:
+    prediction = depth_model.infer_rgb(rgb)
+    depth_map = prediction.depth  # float32, same H×W as rgb
+```
+
+```bash
+laika depth input.jpg output-depth.npy \
+  --model /path/to/depth.onnx --input-size 518 --threads 1
+```
+
+`--input-size` is the minimum network dimension under the upstream aspect-preserving lower-bound rule; network dimensions remain multiples of 14 and may exceed 518. The full-size output is interpolated using the upstream `align_corners=True` coordinate rule. `scripts/validate_depth_inference.py` compares preprocessing and output maps against the pinned PyTorch implementation on deterministic input. `scripts/benchmark_depth_inference.py` measures the complete CLI worker, including image decode, model load, inference, and full-size output. The optional GitHub model smoke runs both; regular CI covers pure resize, input validation, CLI decoding/output, and package behavior without downloading weights.
