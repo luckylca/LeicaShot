@@ -13,7 +13,7 @@
       "sha256": "715fade13be8f229f8a70cc02066f656f2423a59effd0579197bbf57860e1378",
       "license": "Apache-2.0",
       "license_url": "https://github.com/DepthAnything/Depth-Anything-V2/blob/a561b849ebae10a6f5ef49e26c83cbbcd36c71bf/LICENSE",
-      "status": "pytorch-cpu-inference-and-fixed-shape-onnx-parity-validated"
+      "status": "pytorch-cpu-inference-and-static-dynamic-onnx-parity-validated"
     }
   ]
 }

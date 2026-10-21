@@ -49,8 +49,8 @@ jobs:
           python scripts/export_depth_anything_v2.py \
             --source-checkout "$RUNNER_TEMP/depth-anything-v2" \
             --weights "$RUNNER_TEMP/laika-models/depth_anything_v2_vits.pth" \
-            --output "$RUNNER_TEMP/depth-anything-v2-small-518x518.onnx" \
-            --height 518 --width 518 --threads 1
+            --output "$RUNNER_TEMP/depth-anything-v2-small-dynamic.onnx" \
+            --height 518 --width 686 --threads 1 --dynamic
       - name: Measure PyTorch and ONNX CPU workers
         run: |
           python scripts/benchmark_depth_anything_v2.py \
@@ -60,5 +60,5 @@ jobs:
             --height 518 --width 518 --threads 1 --runs 3
           python scripts/benchmark_depth_anything_v2.py \
             --runtime onnx \
-            --onnx "$RUNNER_TEMP/depth-anything-v2-small-518x518.onnx" \
+            --onnx "$RUNNER_TEMP/depth-anything-v2-small-dynamic.onnx" \
             --height 518 --width 518 --threads 1 --runs 3
