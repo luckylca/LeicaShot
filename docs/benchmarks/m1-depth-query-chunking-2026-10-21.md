@@ -40,10 +40,28 @@ absolute difference from its PyTorch reference was `1.67e-5` at most, below the
 variants and used essentially the same peak RSS as 64, so 128 is the current
 experimental choice.
 
+## Linux opt-in model smoke
+
+The `model-smoke` GitHub Actions job also compared baseline and chunked ONNX
+graphs on an x86_64 Linux hosted runner (4 logical CPUs, Python 3.11.17,
+ONNX Runtime 1.31.0, one inference thread). At 1400×518, with one warmup,
+three measured runs, and 5 ms process-tree RSS sampling:
+
+| Graph | Peak process-tree RSS | Median inference |
+| --- | ---: | ---: |
+| Full attention baseline | 1,811,435,520 B (1,727.5 MiB) | 6.079 s |
+| Query chunk 128 | 970,530,816 B (925.6 MiB) | 6.633 s |
+
+That runner measured 46.4% lower RSS and 9.1% higher median latency for the
+chunked graph. ONNX maximum absolute error was `1.62e-5`, and the graph retained
+all 12 loops. The runner reported no cgroup memory limit; this is a
+cross-platform model smoke, not a low-memory constrained-system test.
+
 ## Limits
 
-These are single-stage model tests on one 8 GiB Mac, not repeated hardware
-trials. Host available memory varied between runs. The tensor is synthetic;
+These are single-stage model tests on one 8 GiB Mac and one hosted Linux runner,
+not repeated hardware trials. Host available memory varied between Mac runs.
+The tensor is synthetic;
 preprocessing, image decoding, output interpolation to original photo size,
 other models, and full-pipeline memory are excluded. This experiment does not
 establish a 4 GiB or 2 GiB end-to-end target, nor does it measure photo quality.
