@@ -2,7 +2,9 @@
 
 Laika is a new cross-platform Python image processing engine focused on low peak memory and practical CPU inference. It is an independent project with its own API, implementation, and version history. The Android reference project is research material only; its source and model files are not copied into this repository.
 
-**Status:** early 0.x development. A CPU Depth Anything V2 Small ONNX adapter, a reproducible dynamic exporter, exact global attention query chunking, and reference-sized depth preprocessing are available on the integration branch. The remaining color, bokeh, subject, composition, and HTTP pipeline are not implemented.
+**Status:** early 0.x development. A CPU Depth Anything V2 Small ONNX adapter, a reproducible dynamic exporter, exact global attention query chunking, reference-sized depth preprocessing, SAM 2.1 subject-prompt primitives, and an experimental local-weight ViTMatte CPU/tiling adapter are available on the integration branch. The complete subject workflow, color, bokeh, composition, and HTTP pipeline are not implemented.
+
+The Composition-1k ViTMatte checkpoint is excluded from commercial use and redistribution under Adobe's dataset terms; its published model-card license label does not override those terms. Laika does not fetch or ship those weights.
 
 ## Project principles
 

@@ -83,7 +83,9 @@ SAM2_BUILD_CUDA=0 /tmp/laika-sam-env/bin/pip install -e /tmp/laika-sam2
   --output-dir /tmp/laika-sam-onnx --threads 1
 ```
 
-The M9 checkpoint remains excluded because its reference project license limits it to personal non-commercial use. ARNet and GAIC checkpoint permissions remain unresolved. The ViTMatte model card says Apache-2.0, while its Composition-1k training data requires separate license review before commercial use or redistribution. See the [reference study](research/reference-study.md).
+The M9 checkpoint remains excluded because its reference project license limits it to personal non-commercial use. ARNet and GAIC checkpoint permissions remain unresolved. Adobe Research's Composition-1k license restricts trained models to non-commercial use and distribution. See the [ViTMatte study](research/vitmatte-integration.md) for the conflicting Hugging Face metadata and Laika's exclusion decision.
+
+ViTMatte is not in the fetchable model manifest. `laika.matting` currently provides local RGB/trimap tensor preparation, a CPU adapter for a caller-supplied dynamic-spatial `pixel_values` → `alpha` ONNX graph, and configurable 512/768/1024 tile inference. The Composition-1k weights are excluded from commercial use and redistribution by Adobe's dataset license absent a separate written grant. No ViTMatte weights have been independently hash-verified or exported by Laika; the reference project's artifact hashes are comparison metadata only. See the [ViTMatte integration study](research/vitmatte-integration.md) for provenance, license status, and validation limits.
 
 ## CPU inference adapter and CLI
 
