@@ -2,8 +2,9 @@
 
 Updated: 2026-10-22
 
-This records the pre-optimization full-resolution baseline. The paired run with
-PR #32's exact-zero radiance optimization is still pending.
+This records paired full-resolution Linux runs before and after PR #32's
+exact-zero radiance optimization. Both used the same source image, model assets,
+output dimensions, ARM64 guest, and container resource limits.
 
 ## Configuration
 
@@ -34,12 +35,43 @@ total task time. The final PNG was copied from the completed container to
 `/tmp/laika-pipeline-results/python-fullres-tiled-512.png`; no photo or model is
 stored in Git.
 
-## Comparison still required
+## Optimized result
 
-The next run must use the same input, models, 5760×3840 output, CPU quota,
-thread count, Low Memory strategy, and 512-row chunks with the merged PR #32
-code. Record total time, stage times, process-tree RSS, cgroup peak/events,
-output dimensions and hash. Compare decoded RGB against the baseline and report
-max, mean, p95, p99, changed-pixel count, and whether the full output is
-byte-identical. The baseline alone does not establish the optimized full-size
-runtime or an 8/4/2 GiB acceptance result.
+The optimized run used `develop` after PR #32 (`a503d0b`) and the same pinned
+models, source, full-size output, ARM64 Linux guest, 3 GiB cgroup, 2 CPU quota,
+one ONNX thread, Low Memory mode, and 512-row chunks. The task exited normally
+with Docker `OOMKilled=false`; all cgroup OOM/limit event counters were zero.
+
+| Measure | Before PR #32 | With PR #32 | Change |
+|---|---:|---:|---:|
+| Complete task wall | 5,658.667 s | 2,112.493 s | 62.7% shorter |
+| Highlight scatter | 5,323.159 s | 1,739.518 s | 67.3% shorter |
+| Process-tree sampled peak RSS | 2,502,225,920 B | 2,369,044,480 B | 5.3% lower |
+| Linux cgroup peak | 2,676,203,520 B | 2,427,625,472 B | 9.3% lower |
+| Cgroup limit | 3,221,225,472 B | 3,221,225,472 B | same |
+| OOM / limit events | 0 / 0 | 0 / 0 | none |
+| M9 inference | 7.180 s | 10.060 s | — |
+| Depth inference | 15.353 s | 24.127 s | — |
+| ARNet passes | 193.806 / 56.912 / 12.182 / 4.916 s | 212.942 / 49.564 / 22.195 / 4.333 s | — |
+| Output | 5760×3840 RGB PNG, 16,621,497 B | 5760×3840 RGB PNG, 16,621,497 B | same |
+
+The output SHA-256 is identical in both runs:
+`62bf1f9b29a93e15435d5f38eb9975d5e910ca773fc5eb4e6de43b16a8ca1aef`.
+Decoded RGB comparison also measured max absolute error 0, MAE 0, RMSE 0,
+p95/p99 error 0, and zero changed pixels. This is a bit-for-bit image-quality
+parity result at 5760×3840. Stage timings outside the optimized scatter path
+varied between runs; these single paired observations do not establish a
+throughput guarantee.
+
+The optimized task's per-stage measurements were: depth inference 24.127 s,
+M9 inference 10.060 s, LabFusion 3.310 s, ARNet passes 212.942 / 49.564 /
+22.195 / 4.333 s, highlight scatter 1,739.518 s, and export 6.932 s. Its
+process-tree sampled peak was 2,369,044,480 B (scatter stage); cgroup peak was
+2,427,625,472 B under the 3,221,225,472 B cap. The task report and output were
+retrieved from the exited container; the image is at
+`/tmp/laika-pipeline-results/python-fullres-optimized-512.png`.
+
+These measurements show that this full-resolution three-model color+bokeh task
+fits the tested 3 GiB task cgroup and preserves every output pixel. They do not
+establish full-resolution SAM/ViTMatte subject-protection memory, 2 GiB
+acceptance, concurrent-service capacity, or performance on other CPUs/images.
