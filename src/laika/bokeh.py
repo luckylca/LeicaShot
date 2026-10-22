@@ -8,7 +8,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
-from math import ceil, floor, isfinite
+from math import ceil, floor, isfinite, log2
 from pathlib import Path
 from typing import Any, Literal
 
@@ -494,6 +494,7 @@ def render_bokeh(
     *,
     row_chunk_height: int = 128,
     cancel_check: Callable[[], None] | None = None,
+    pass_callback: Callable[[int, int, float], None] | None = None,
 ) -> BokehRenderResult:
     """Render a full-size photo using the reference multiscale ARNet schedule.
 
@@ -546,6 +547,7 @@ def render_bokeh(
     image_float = image.astype(np.float32)
     np.divide(image_float, np.float32(255.0), out=image_float)
     target_scale = max(1.0, float(np.float32(max_abs_coc / 8.0)))
+    total_passes = ceil(log2(target_scale)) + 1
     stage_seconds["prepare"] = time.perf_counter() - stage_started
     stage_started = time.perf_counter()
     composite: Any | None = None
@@ -604,6 +606,8 @@ def render_bokeh(
             del enlarged
 
         scales.append(actual_scale)
+        if pass_callback is not None:
+            pass_callback(len(scales), total_passes, actual_scale)
         stage_seconds[f"arnet_pass_{len(scales)}"] = time.perf_counter() - stage_started
         stage_started = time.perf_counter()
         previous_scale = actual_scale

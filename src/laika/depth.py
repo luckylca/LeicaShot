@@ -7,6 +7,7 @@ import json
 import math
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -321,6 +322,11 @@ class DepthAnythingV2Small:
         self.max_analysis_edge = max_analysis_edge
         self.max_source_pixels = max_source_pixels
         self.max_network_pixels = max_network_pixels
+        self.model_sha256 = (
+            _sha256(self.model_path) if self.model_path.is_file() else ""
+        )
+        self.runtime_version = ort.__version__
+        self.provider = "CPUExecutionProvider"
         self._cv2 = cv2
         self._np = np
         self._session: Any | None = None
@@ -340,7 +346,7 @@ class DepthAnythingV2Small:
         if (
             report.get("model_id") != "depth-anything-v2-small"
             or report.get("dynamic_shapes") is not True
-            or report.get("onnx_sha256") != _sha256(self.model_path)
+            or report.get("onnx_sha256") != self.model_sha256
         ):
             raise DepthInferenceError(
                 "ONNX model does not match a validated dynamic Small export"
@@ -374,10 +380,17 @@ class DepthAnythingV2Small:
             raise DepthInferenceError("depth model must run on CPUExecutionProvider")
         self._session = session
 
-    def infer_rgb(self, rgb: Any) -> DepthPrediction:
+    def infer_rgb(
+        self,
+        rgb: Any,
+        *,
+        cancel_check: Callable[[], None] | None = None,
+    ) -> DepthPrediction:
         """Estimate depth for an H×W×3 uint8 RGB image without resizing output."""
         if self._session is None:
             raise DepthInferenceError("depth session is closed")
+        if cancel_check is not None:
+            cancel_check()
         np = self._np
         image = np.asarray(rgb)
         if image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
@@ -416,6 +429,8 @@ class DepthAnythingV2Small:
         raw_depth = self._session.run([self._output_name], {self._input_name: tensor})[
             0
         ]
+        if cancel_check is not None:
+            cancel_check()
         stage_seconds["inference"] = time.perf_counter() - stage_started
         if (
             raw_depth.shape != (1, network_height, network_width)
