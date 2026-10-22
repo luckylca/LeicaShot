@@ -257,3 +257,10 @@
 
 - PR #36 was marked ready after all eight required checks passed, then squash-merged to `develop` as `79148e1`. The previously stuck React Node 24 check passed after a job-only rerun; two optional model-weight checks were skipped because CI does not carry local model assets.
 - Created `perf/highlight-scatter-chunk-cgroup` from updated `develop` immediately after the merge. The same-source 512-row cgroup run remains active in highlight scatter. At 85.1% task progress its cgroup peak is 2,597,527,552 B, with zero OOM/limit events. The 128-row run and exact output hash are recorded in the [telemetry report](benchmarks/arnet-tile-telemetry-2026-10-23.md).
+
+## Same-source full-resolution highlight chunk comparison
+
+- Completed the 512-row CPU task on the same 5760×3840 photo, models, mounted code, ARM64 guest, and 3 GiB cgroup as the 128-row telemetry run. Exit code was 0; cgroup peak was 2,597,527,552 B with zero OOM/limit events; process-tree sampled peak was 2,405,482,496 B; wall time was 6,000.718 s.
+- Both outputs are 5760×3840 RGB PNGs of 16,621,497 bytes and share SHA-256 `62bf1f9b29a93e15435d5f38eb9975d5e910ca773fc5eb4e6de43b16a8ca1aef`.
+- Scatter took 4,779.098 s at 512 rows and 4,473.569 s at 128 rows. Cgroup peak was 3.66% lower at 512, while sampled process-tree RSS was 2.02% higher. Several other stage timings varied by 3–5×, so the single sequential trials do not isolate chunk-size performance or establish a stable memory winner. Retain the 128-row default. Full configuration and stage data are in the [comparison report](benchmarks/highlight-chunk-size-cgroup-2026-10-23.md).
+- Next engineering task: repeat native 5760×3840 subject protection with current-source M9, Depth, ARNet, SAM and ViTMatte under cgroup telemetry; retain full output resolution and report edge quality.
