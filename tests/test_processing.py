@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from laika.composition import CompositionCrop
 from laika.processing import (
     LaikaProcessingEngine,
     ProcessingCancelled,
@@ -263,6 +264,38 @@ def test_unified_engine_runs_each_single_feature_without_loading_unused_models(
         assert set(result.models) == {"depth", "bokeh"}
         assert not FakeM9Engine.instances
     assert output.is_file()
+
+
+@pytest.mark.parametrize("mode", ["color", "bokeh", "color+bokeh"])
+def test_unified_engine_applies_selected_crop_after_requested_ai_modes(
+    tmp_path: Path, mode: str
+) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "cropped.png"
+    _source(source)
+    crop = CompositionCrop(0.125, 0.125, 0.875, 0.875)
+
+    with _engine(mode=mode) as engine:
+        result = engine.process_file(
+            source,
+            output,
+            options=ProcessingOptions(mode=mode, crop=crop),  # type: ignore[arg-type]
+        )
+
+    with Image.open(output) as image:
+        assert image.size == (60, 48)
+        assert image.format == "PNG"
+    assert (result.width, result.height) == (60, 48)
+    assert result.stage_seconds["composition.crop"] >= 0
+    if mode == "color":
+        assert set(result.models) == {"m9"}
+        assert not FakeDepthEngine.instances
+        assert not FakeBokehEngine.instances
+    elif mode == "bokeh":
+        assert set(result.models) == {"depth", "bokeh"}
+        assert not FakeM9Engine.instances
+    else:
+        assert set(result.models) == {"m9", "depth", "bokeh"}
 
 
 def test_unified_engine_applies_explicit_output_size_and_reuses_balanced_sessions(

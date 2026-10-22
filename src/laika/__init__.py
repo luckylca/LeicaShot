@@ -1,8 +1,15 @@
 """Laika image processing engine."""
 
+from laika.composition import (
+    CompositionCrop,
+    CompositionInferenceError,
+    CompositionResult,
+    CompositionSuggestion,
+)
 from laika.depth import DepthAnythingV2Small, DepthInferenceError, DepthPrediction
 from laika.m9 import M9ColorEngine, M9ColorResult, M9InferenceError, M9Onnx
 from laika.processing import (
+    CropApplicationResult,
     LaikaProcessingEngine,
     ProcessingCancelled,
     ProcessingError,
@@ -17,11 +24,16 @@ __all__ = [
     "DepthAnythingV2Small",
     "DepthInferenceError",
     "DepthPrediction",
+    "CompositionCrop",
+    "CompositionInferenceError",
+    "CompositionResult",
+    "CompositionSuggestion",
     "M9ColorEngine",
     "M9ColorResult",
     "M9InferenceError",
     "M9Onnx",
     "LaikaProcessingEngine",
+    "CropApplicationResult",
     "ProcessingCancelled",
     "ProcessingError",
     "ProcessingOptions",

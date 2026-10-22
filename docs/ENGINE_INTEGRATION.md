@@ -13,6 +13,7 @@ with LaikaProcessingEngine(
     bokeh_model_path="/local/models/legendary-1.0-arnet.fp16.onnx",
     sam_model_dir="/local/models/sam2-onnx",
     vitmatte_model_path="/local/models/vitmatte-onnx/vitmatte-small-composition-1k.fp32.onnx",
+    composition_model_path="/local/models/gaic/gaic-mobilenetv2-reddim16.fp32.onnx",
     strategy="low-memory",
 ) as engine:
     result = engine.process_file(
@@ -37,9 +38,9 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 
 - Low Memory: Depth Anything reads the EXIF-oriented original first, writes its full-size raw depth map to a task-owned temporary `.npy` for color+bokeh requests, then closes the Depth ONNX session. M9 next reads the original and writes a temporary full-size color result, then closes the M9 session. That M9 image is decoded once and shared by SAM, ViTMatte, and ARNet; the saved original-image depth is normalized and resized only to the explicitly requested work size. SAM's encoder runs once for a photo and its byte-bounded feature cache serves later point prompts; SAM closes before ViTMatte loads. ViTMatte processes the refined mask in configured tiles and closes before ARNet. ARNet closes before output export.
 - Bokeh-only requests keep the one decoded source RGB array across depth inference and ARNet, while closing the Depth session before ARNet is loaded. Color-only requests do not construct or load depth/ARNet.
-- Balanced: M9, depth, and ARNet sessions are created lazily and reused across serialized calls. `engine.close()` releases all retained sessions.
+- Balanced: M9, depth, ARNet, SAM, ViTMatte, and GAIC sessions are created lazily and reused across serialized calls. `engine.close()` releases all retained sessions.
 - Calls on one engine instance are serialized under a lock. A server must still apply a global bounded task queue across engine instances.
-- Progress callbacks run at stage boundaries. Cancellation is checked between stages, during M9 row fusion, and during ARNet compositing; ONNX model runs themselves are not preempted mid-inference.
+- Progress callbacks run at stage boundaries. Cancellation is checked between stages, during M9 row fusion, during ARNet compositing, and during GAIC inference through ONNX Runtime `RunOptions`. Other ONNX runs are not preempted mid-inference.
 - PNG output is written to a temporary file beside the destination and atomically replaced only after successful processing.
 
 ## Highlight stage integrated on `feat/bokeh-highlight-scatter`
@@ -56,12 +57,22 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - The subject alpha reduces CoC before ARNet and highlight scatter. A pull-push fill creates a clean background plate under the subject, then the sharp M9/Lab image is composited over the rendered background with row-chunked edge decontamination.
 - The P3M-10K 1080×1620 three-point CPU run measured 788,070,400 B process-tree RSS and 112.73 s. Its three points produced mask IoU 0.9879; SAM encoder cache recorded two hits. On the same alpha/source/background arrays, the Python final composite matched the Kotlin phone reference within MAE 0.0368 and RMSE 0.5827 (98.84% of RGB pixels exactly equal). See [subject-protection benchmark](benchmarks/subject-protection-integration-2026-10-22.md).
 
+## GAIC composition integrated on `feat/gaic-composition-integration`
+
+- `suggest_composition()` runs the validated GAIC ONNX graph through the shared Python engine, applies EXIF orientation and configured file/pixel limits, returns ranked model suggestions, emits progress, and honors cancellation during ONNX scoring.
+- The GAIC session follows the engine strategy: Low Memory closes it after one request; Balanced loads lazily and reuses it. `close()` releases retained GAIC state.
+- `ProcessingOptions.crop` applies a selected normalized crop after any requested color, bokeh, or combined render. The crop is explicit, so GAIC can run as a preceding suggestion call and does not run again during rendering.
+- `apply_crop_file()` remains a model-free path for an existing image, preserves ICC metadata, and avoids rerunning M9, depth, ARNet, SAM, or ViTMatte when the caller already has a rendered result.
+- `laika composition`, `laika crop`, and `laika pipeline --crop LEFT,TOP,RIGHT,BOTTOM` call these same SDK operations. Crops use the EXIF-oriented pixel rectangle and do not upscale.
+- Across three fresh Low Memory workers on a 1080×1620 P3M-10K image, GAIC scored 556 proposals in a median 1.016 s with 353,615,872 B median process-tree RSS (observed range 343,523,328–362,512,384 B). The physical-phone Kotlin run on `a4976c80` used source dimensions for candidate snapping. Same-tensor score values matched exactly; on the actual phone/Python photo decode paths, the top-four crop boxes matched and score improvements differed by at most 0.0131. See [GAIC real-photo benchmark](benchmarks/gaic-real-photo-2026-10-22.md).
+- GAIC suggestions and crop application are available through the shared engine and CLI. FastAPI task parameters and Web crop controls remain pending.
+
 ## Current integration limits
 
 - M9 low-memory mode decodes its source for model preprocessing and again for exact Lab detail fusion. The combined path then decodes the intermediate M9 image once for shared depth/bokeh input. This preserves existing M9 behavior but is not yet the minimum-decode design.
 - Depth inference returns a full-size float32 depth map. Normalization currently sorts a copy to reproduce percentile semantics; future profiling should replace this only if an exact memory-bounded percentile implementation is demonstrated.
 - ARNet's first full-scale pass is the dominant Bokeh inference time. The current renderer keeps one full-size float32 source and composite and resizes each ARNet pass output back to the requested raster. Tiled full-global equivalence has not been demonstrated.
-- GAIC scoring and crop application are still outside the shared request. Full 5760×3840 requests with highlight scatter and subject protection have not yet been measured.
+- Composition suggestions and crop application are available on the shared engine, but composition is not yet an option within `process_file()`. Full 5760×3840 requests with highlight scatter and subject protection have not yet been measured.
 - Field-dependent optical scatter is the current CPU bottleneck: 140.89 s on the 2048×1365 real-photo task. It evaluates all required depth layers and the 5×5 pupil field; no reduced-resolution shortcut is used. Exact-preserving CPU optimization and a full-resolution RSS run remain outstanding.
 
 ## Real-photo verification
@@ -80,6 +91,11 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [x] Intermediate highlight split, recovery, field scatter and softening were compared numerically against Kotlin fixtures executed on the physical ADB device; detailed limits and metrics are in [the highlight report](benchmarks/bokeh-highlight-scatter-2026-10-22.md).
 - [x] Run M9, Depth, ARNet, SAM and ViTMatte together through one Python CLI request on a real 1080×1620 photo; record process-tree RSS, per-stage timing, three-point mask/alpha metrics, and CPU provider/model hashes.
 - [x] Compare final subject composite against the reference Kotlin implementation run on the physical phone with an identical input fixture; no emulator was used.
+- [x] Export the pinned GAIC checkpoint and verify PyTorch/ONNX score parity on three dynamic tensor shapes.
+- [x] Route composition suggestions and model-free crop application through the shared Python engine and CLI.
+- [x] Run 556-candidate GAIC scoring on a real photo; compare same-tensor results and both image-preprocessing paths with Kotlin on the physical ADB phone, with no emulator use.
+- [x] Apply an explicitly selected GAIC crop after any processing mode through `ProcessingOptions`; suggestions remain an explicit separate model call.
+- [ ] Add GAIC suggestion and crop selection to the versioned API/Web editing flow.
 - [ ] Validate more hair, fine-object and background-gap photos, and measure full-resolution subject protection and Linux cgroup limits.
 - [ ] Six-platform GitHub Actions matrix passes before merge.
 - [ ] Full-resolution highlight run and Linux cgroup memory acceptance remain outstanding.

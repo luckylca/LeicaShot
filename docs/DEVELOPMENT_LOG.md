@@ -1,5 +1,12 @@
 # Development log
 
+## 2026-10-22 — GAIC crop in shared processing request
+
+- Added the pinned GAIC MobileNetV2 reddim16 export, CPU ONNX inference, shared-engine crop suggestions, model-free crop operation, and explicit `ProcessingOptions.crop` after color, bokeh, or combined rendering. The crop is passed by the caller after reviewing suggestions; the render request does not rerun GAIC.
+- Compared the physical-device Kotlin reference on `adb -s a4976c80`; it selected the same four boxes as Python on the actual photo and exactly matching score deltas on the shared tensor fixture. The Android emulator was not used.
+- Ran M9 plus LabFusion through `process_file()` with the selected crop on a real 1080×1620 portrait: 20.117 s total, 356,876,288 B sampled process-tree peak RSS, CPUExecutionProvider, output 918×1224. The output exactly matches cropping the existing full-size M9+LabFusion result (maximum channel error 0).
+- Verification after crop integration: all 159 local pytest cases pass; Ruff lint, format, and `git diff --check` pass. GAIC timing, model hashes and comparison limits are in the [real-photo report](benchmarks/gaic-real-photo-2026-10-22.md).
+
 ## 2026-10-22 — Depth Anything V2 real-photo CPU smoke
 
 - Ran the pinned dynamic CPU ONNX adapter on the CC0 5760×3840 mountains photo. It used a 1220×813 analysis raster, a 1232×826 padded network tensor, and exported a finite float32 map at the original 5760×3840 size.
@@ -141,3 +148,11 @@
 - Swept bokeh row chunks 128 and 512 on the real photo. Chunk 512 reduced scatter time from 163.31 s to 137.63 s (15.7%) while sampled renderer RSS rose by 13.6 MB. This is a host-specific measurement; the current default remains 128.
 - Compared intermediate buffers to Kotlin execution on physical phone serial `a4976c80`: base plate exact on the real crop; linear split maximum absolute error `1.19e-7`; field optical active-pixel MAE `9.48e-9` and max `8.94e-8`; clipped recovery max `2.86e-6`. Full real-photo Python/Kotlin output comparison measured 41.378 dB PSNR, but is not an isolated highlight-equivalence metric.
 - Full 139-test suite passed; Ruff lint and formatting passed. No full-resolution highlight run or Linux cgroup result exists. The next feature after this branch is SAM → trimap → ViTMatte subject protection; optical scatter CPU cost remains a separate performance task.
+
+## 2026-10-22 — GAIC composition scoring and crop application
+
+- After PR #24 merged, created `feat/gaic-composition-integration`. Pinned the authorized GAIC MobileNetV2 `reddim16` checkpoint and upstream MIT implementation revision; exported a dynamic CPU FP32 ONNX graph with a SHA-gated validation report. PyTorch/ONNX parity passed on three shapes with maximum absolute score error ≤`7.16e-7`; model weights stayed outside Git.
+- Added original-source-pixel candidate snapping, ≤1220-pixel analysis preprocessing, GAIC suggestions and model-free crop application through `LaikaProcessingEngine`; added `laika composition` and `laika crop`. The crop path preserves ICC, does not upscale, and loads no AI model. Balanced session reuse, Low Memory release, progress, and active GAIC RunOptions cancellation are covered.
+- Across three fresh workers, the 1080×1620 portrait task scored 556 candidates in 1.016 s median wall with 353,615,872 B median sampled process-tree RSS (343,523,328–362,512,384 B range). The selected full-resolution 918×1224 crop exported in 0.176 s. No cgroup was visible.
+- Compared the same 813×1220 RGB tensor and exported graph on the physical Android phone `a4976c80` through the reference Kotlin `GaicComposition`; top-four crop boxes and score improvements matched exactly. A second comparison ran both platforms' full photo-loading paths: analysis raster MAE was 0.313 and RMSE 0.583, with identical top-four crop boxes and maximum score-improvement difference 0.0131. The Python resize uses OpenCV `INTER_LINEAR_EXACT`, the closest tested resize kernel to the phone output. An isolated test app package left the installed reference app untouched; no emulator was used.
+- Added export provenance, real-photo benchmark, model documentation, and SDK/CLI/runtime tests. Broader scene quality, composition in `ProcessingOptions`, the HTTP API, and Web integration remain open.

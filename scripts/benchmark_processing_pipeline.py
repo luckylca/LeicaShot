@@ -13,6 +13,7 @@ from typing import Any
 
 import psutil
 
+from laika.composition import CompositionCrop
 from laika.processing import LaikaProcessingEngine, ProcessingOptions
 
 
@@ -54,6 +55,18 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parse_crop(value: str) -> CompositionCrop:
+    try:
+        coordinates = tuple(float(item) for item in value.split(","))
+        if len(coordinates) != 4:
+            raise ValueError
+        return CompositionCrop(*coordinates)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "crop must be LEFT,TOP,RIGHT,BOTTOM in normalized coordinates"
+        ) from exc
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
@@ -82,6 +95,12 @@ def main() -> int:
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
+    parser.add_argument(
+        "--crop",
+        type=_parse_crop,
+        metavar="LEFT,TOP,RIGHT,BOTTOM",
+        help="apply an explicitly selected normalized crop after AI processing",
+    )
     parser.add_argument("--focus-x", type=float, default=0.5)
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
@@ -127,6 +146,7 @@ def main() -> int:
                 bokeh_row_chunk_height=args.bokeh_row_chunk_height,
                 subject_points=tuple(subject_points),
                 matte_tile_size=args.matte_tile_size,
+                crop=args.crop,
             ),
         )
     report = {
@@ -138,6 +158,7 @@ def main() -> int:
         "strategy": args.strategy,
         "width": result.width,
         "height": result.height,
+        "crop": args.crop.as_tuple() if args.crop is not None else None,
         "threads": args.threads,
         "bokeh_row_chunk_height": args.bokeh_row_chunk_height,
         "host": {

@@ -22,6 +22,7 @@ from laika.bokeh import (
     render_bokeh,
     resize_rgb_cubic,
 )
+from laika.composition import CompositionCrop, CompositionInferenceError
 from laika.depth import (
     DepthAnythingV2Small,
     DepthInferenceError,
@@ -173,12 +174,60 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--m9-row-chunk-height", type=int, default=512)
     pipeline_parser.add_argument("--bokeh-row-chunk-height", type=int, default=128)
     pipeline_parser.add_argument(
+        "--crop",
+        type=_parse_composition_crop,
+        metavar="LEFT,TOP,RIGHT,BOTTOM",
+        help="apply a normalized crop after AI rendering without rerunning GAIC",
+    )
+    pipeline_parser.add_argument(
         "--max-upload-bytes", type=int, default=50 * 1024 * 1024
     )
     pipeline_parser.add_argument("--max-pixels", type=int, default=40_000_000)
     pipeline_parser.add_argument("--max-network-pixels", type=int, default=4_000_000)
     pipeline_parser.add_argument("--progress", action="store_true")
+    composition_parser = subparsers.add_parser(
+        "composition", help="suggest GAIC smart crops without modifying the photo"
+    )
+    composition_parser.add_argument("input", help="input JPEG, PNG, or WebP")
+    composition_parser.add_argument(
+        "--model", required=True, help="validated GAIC ONNX path"
+    )
+    composition_parser.add_argument("--target-long-edge", type=int)
+    composition_parser.add_argument(
+        "--strategy", choices=("low-memory", "balanced"), default="low-memory"
+    )
+    composition_parser.add_argument("--threads", type=int, default=None)
+    composition_parser.add_argument(
+        "--max-upload-bytes", type=int, default=50 * 1024 * 1024
+    )
+    composition_parser.add_argument("--max-pixels", type=int, default=40_000_000)
+    crop_parser = subparsers.add_parser(
+        "crop", help="apply a saved normalized crop without loading an AI model"
+    )
+    crop_parser.add_argument("input", help="input JPEG, PNG, or WebP")
+    crop_parser.add_argument("output", help="output .png path")
+    crop_parser.add_argument(
+        "--crop",
+        required=True,
+        type=_parse_composition_crop,
+        metavar="LEFT,TOP,RIGHT,BOTTOM",
+        help="normalized half-open crop coordinates in [0, 1]",
+    )
+    crop_parser.add_argument("--max-upload-bytes", type=int, default=50 * 1024 * 1024)
+    crop_parser.add_argument("--max-pixels", type=int, default=40_000_000)
     return parser
+
+
+def _parse_composition_crop(value: str) -> CompositionCrop:
+    try:
+        parts = tuple(float(item) for item in value.split(","))
+        if len(parts) != 4:
+            raise ValueError
+        return CompositionCrop(*parts)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "crop must contain four normalized coordinates: LEFT,TOP,RIGHT,BOTTOM"
+        ) from exc
 
 
 def _read_rgb(path: Path, *, max_bytes: int, max_pixels: int) -> Any:
@@ -487,6 +536,7 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         bokeh_row_chunk_height=args.bokeh_row_chunk_height,
         subject_points=tuple(subject_points),
         matte_tile_size=args.matte_tile_size,
+        crop=args.crop,
     )
     with LaikaProcessingEngine(
         m9_model_path=args.m9_model,
@@ -517,6 +567,31 @@ def _run_pipeline(args: argparse.Namespace) -> int:
             options=options,
             progress_callback=progress_callback,
         )
+    print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _run_composition(args: argparse.Namespace) -> int:
+    with LaikaProcessingEngine(
+        composition_model_path=args.model,
+        strategy=args.strategy,
+        threads=args.threads,
+        max_upload_bytes=args.max_upload_bytes,
+        max_pixels=args.max_pixels,
+    ) as engine:
+        result = engine.suggest_composition(
+            args.input, target_long_edge=args.target_long_edge
+        )
+    print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+def _run_crop(args: argparse.Namespace) -> int:
+    with LaikaProcessingEngine(
+        max_upload_bytes=args.max_upload_bytes,
+        max_pixels=args.max_pixels,
+    ) as engine:
+        result = engine.apply_crop_file(args.input, args.output, args.crop)
     print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
     return 0
 
@@ -570,6 +645,24 @@ def main() -> int:
             ProcessingError,
             ValueError,
         ) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 2
+    if args.command == "composition":
+        try:
+            return _run_composition(args)
+        except (
+            CompositionInferenceError,
+            ImageInputError,
+            OSError,
+            ProcessingError,
+            ValueError,
+        ) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 2
+    if args.command == "crop":
+        try:
+            return _run_crop(args)
+        except (ImageInputError, OSError, ProcessingError, ValueError) as exc:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
             return 2
     try:
