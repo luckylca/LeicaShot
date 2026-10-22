@@ -320,6 +320,30 @@ def _optical_pupil_kernel(
     return result.astype(np.float64)
 
 
+def _canonical_pupil_shape(
+    shape: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Canonicalize opposite field axes, whose projected pupil is identical."""
+    ux, uy, radial_ratio = shape
+    if ux < 0.0 or (ux == 0.0 and uy < 0.0):
+        return -ux, -uy, radial_ratio
+    return ux, uy, radial_ratio
+
+
+def _field_pupil_kernels(
+    shapes: list[tuple[float, float, float]], radius: int, aperture: float
+) -> list[Any]:
+    """Build each distinct field pupil once and reuse it for opposite nodes."""
+    cache: dict[tuple[float, float, float], Any] = {}
+    kernels = []
+    for shape in shapes:
+        key = _canonical_pupil_shape(shape)
+        if key not in cache:
+            cache[key] = _optical_pupil_kernel(radius, aperture, *key)
+        kernels.append(cache[key])
+    return kernels
+
+
 def _field_axis_nodes(size: int) -> list[tuple[float, Any, int, int]]:
     if size == 1:
         return [(0.5, np.ones(1, dtype=np.float32), 0, 1)]
@@ -394,6 +418,7 @@ def _scatter_field_optical(
             nodes.append(
                 (x, y, wx, wy, x0, x1, y0, y1, _optical_shape(x, y, width, height))
             )
+    pupil_shapes = [node[8] for node in nodes]
 
     for level_index, level in enumerate(levels):
         _check(cancel_check)
@@ -402,9 +427,7 @@ def _scatter_field_optical(
             zero_kernel = aperture_kernel(0, aperture).astype(np.float64)
             kernels = [zero_kernel] * len(nodes)
         else:
-            kernels = [
-                _optical_pupil_kernel(radius, aperture, *node[8]) for node in nodes
-            ]
+            kernels = _field_pupil_kernels(pupil_shapes, radius, aperture)
         for out_y0 in range(0, height, row_chunk_height):
             _check(cancel_check)
             out_y1 = min(height, out_y0 + row_chunk_height)
