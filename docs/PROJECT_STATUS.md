@@ -4,10 +4,10 @@ Updated: 2026-10-23
 
 ## Current checkpoint
 
-- Stable integration branch: `develop`, at merge commit `7e10781` after PR #35.
-- Most recent merged PR: [#35, reduce full-resolution subject render buffers](https://github.com/luckylca/LeicaShot/pull/35); all eight CI checks passed.
-- Active branch: `perf/fullres-cgroup-tile-telemetry`, PR #36. It adds ARNet tile progress/cancellation and per-tile process/cgroup sampling. The source-verified 5760×3840 CPU task completed; seven CI checks pass and the React Node 24 check still reports `in_progress` although all its steps are successful. Keep the PR open until the check reaches a final conclusion.
-- Current branch tests: 187 passed locally; Ruff lint, Ruff format check, and `git diff --check` passed.
+- Stable integration branch: `develop`, at merge commit `79148e1` after PR #36.
+- Most recent merged PR: [#36, add per-tile ARNet cgroup telemetry](https://github.com/luckylca/LeicaShot/pull/36); eight CI checks passed, with the two optional model-asset jobs skipped.
+- Active branch: `perf/highlight-scatter-chunk-cgroup`, created from the clean PR #36 merge. A same-source 5760×3840 CPU comparison of 128-row and 512-row highlight chunks is running under the same 3 GiB cgroup.
+- PR #36 validation: 187 tests passed locally; Ruff lint, Ruff format check, and `git diff --check` passed. The previously stuck React check passed after a job rerun.
 - The earlier 5760×3840 subject-run table had a source-loading error: its containers imported `/app/src` from the benchmark image instead of the mounted checkout. Their exits remain historical observations of that older image, but they do not verify the claimed direct-HWC/tile-size/glibc variants. See the source-loading audit addendum in the [subject memory report](benchmarks/full-resolution-subject-protection-2026-10-22.md).
 - The first explicitly source-loaded, five-model subject retry reached ARNet tile 80/96, then Lima stopped. Docker recorded exit 255 and `OOMKilled=false`; only partial samples exist (2,442,817,536 B sampled cgroup high-water and 1,686,016,000 B process-tree RSS). It is not a completion or OOM result.
 - Real M9 output and matching Depth map at 1024×682 produced bitwise-identical ARNet FP32 tensors for one full-frame inference and four 512-pixel tiles; measured 23.74 s and 16.48 s respectively in one CPU trial. This is a local real-model parity case, not a general speed claim.
@@ -15,6 +15,7 @@ Updated: 2026-10-23
 - The Web editor supports enabling SAM subject protection, selecting/removing multiple positive points, and choosing ViTMatte tile size. Four Web tests and the production build pass; a live Chrome run completed a real five-model task through full-size download.
 - Historical native-size 5760×3840 five-model requests were reported as OOM-killed at 3 GiB and 3.125 GiB, but their source import was not verified; do not use them to claim current-code acceptance or failure. The exact-preserving HWC sink has real tensor parity evidence, while a correct-source native subject run remains unfinished.
 - Current-source M9 + Depth + ARNet + highlights completed at 5760×3840 in a 3 GiB cgroup using 128-row highlight chunks: 2,696,331,264 B cgroup peak, 2,357,911,552 B sampled process-tree peak, 4,789.789 s, zero OOM/limit events, and a byte-identical PNG to the earlier 512-row result. Scatter took 4,473.569 s. Because the source snapshot differs from the earlier 512-row run (2,112.493 s, 1,739.518 s scatter), this is a follow-up experiment, not a controlled chunk-size comparison. See [tile telemetry report](benchmarks/arnet-tile-telemetry-2026-10-23.md).
+- Current-source 512-row comparison is in highlight scatter. At 85.1% task progress, cgroup peak is 2,597,527,552 B and all OOM/limit counters remain zero. Full-task time and exact output comparison are pending on `perf/highlight-scatter-chunk-cgroup`.
 - Python is the only production processing path. Physical Android serial `a4976c80` is reserved for Kotlin reference comparisons; the connected emulator is not used. The user's installed reference app remains untouched.
 - The working GAIC checkpoint and ONNX export are local under `/tmp/laika-models/gaic`; neither is in Git.
 
