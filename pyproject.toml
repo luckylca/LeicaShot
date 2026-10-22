@@ -25,6 +25,7 @@ inference = [
   "opencv-python-headless==5.0.0.93",
 ]
 dev = [
+  "httpx>=0.27",
   "numpy>=1.26",
   "opencv-python-headless==5.0.0.93",
   "pytest>=8.0",
@@ -33,6 +34,7 @@ dev = [
 
 [project.scripts]
 laika = "laika.cli:main"
+laika-api = "laika.api:run"
 laika-bench = "laika.benchmark:main"
 laika-models = "laika.model_assets:main"
 
