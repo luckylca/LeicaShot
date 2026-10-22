@@ -495,13 +495,9 @@ def render_bokeh(
     row_chunk_height: int = 128,
     cancel_check: Callable[[], None] | None = None,
     pass_callback: Callable[[int, int, float], None] | None = None,
+    stage_callback: Callable[[str, float], None] | None = None,
 ) -> BokehRenderResult:
-    """Render a full-size photo using the reference multiscale ARNet schedule.
-
-    This renderer performs the depth-dependent optical plate passes. Highlight
-    extraction, optical highlight scatter, and subject-protection compositing
-    remain separate later stages of the complete reference pipeline.
-    """
+    """Render a full-size photo through ARNet and depth-layered highlight scatter."""
     import cv2
     import numpy as np
 
@@ -543,8 +539,30 @@ def render_bokeh(
             total_seconds=time.perf_counter() - started,
         )
 
+    from laika.highlights import (
+        composite_highlights,
+        extract_highlights,
+        recover_clipped_highlights_inplace,
+        scatter_highlights,
+        soften_highlights_inplace,
+    )
+
+    if stage_callback is not None:
+        stage_callback("highlight-extraction", 0.0)
     stage_started = time.perf_counter()
-    image_float = image.astype(np.float32)
+    split = extract_highlights(
+        image,
+        cancel_check=cancel_check,
+        row_chunk_height=row_chunk_height,
+    )
+    stage_seconds["highlight_extraction"] = time.perf_counter() - stage_started
+    base_rgb = split.base_rgb
+    highlight_linear = split.highlight_linear
+    if stage_callback is not None:
+        stage_callback("highlight-extraction", 1.0)
+
+    stage_started = time.perf_counter()
+    image_float = base_rgb.astype(np.float32)
     np.divide(image_float, np.float32(255.0), out=image_float)
     target_scale = max(1.0, float(np.float32(max_abs_coc / 8.0)))
     total_passes = ceil(log2(target_scale)) + 1
@@ -629,7 +647,66 @@ def render_bokeh(
         np.rint(mixed, out=mixed)
         final_rgb[row_start:row_stop] = mixed.astype(np.uint8)
     stage_seconds["composite"] = time.perf_counter() - stage_started
-    del image_float, composite, coc
+    if bool(np.any(highlight_linear)):
+        if stage_callback is not None:
+            stage_callback("highlight-recovery", 0.0)
+        stage_started = time.perf_counter()
+        recover_clipped_highlights_inplace(
+            highlight_linear,
+            image,
+            coc,
+            row_chunk_height=row_chunk_height,
+            cancel_check=cancel_check,
+        )
+        stage_seconds["highlight_recovery"] = time.perf_counter() - stage_started
+        if stage_callback is not None:
+            stage_callback("highlight-recovery", 1.0)
+        stage_started = time.perf_counter()
+
+        def on_scatter_progress(fraction: float) -> None:
+            if stage_callback is not None:
+                stage_callback("highlight-scatter", fraction)
+
+        scattered = scatter_highlights(
+            highlight_linear,
+            coc,
+            aperture,
+            radius_scale=3.0,
+            field_optics=True,
+            row_chunk_height=row_chunk_height,
+            cancel_check=cancel_check,
+            progress_callback=on_scatter_progress,
+        )
+        stage_seconds["highlight_scatter"] = time.perf_counter() - stage_started
+        if stage_callback is not None:
+            stage_callback("highlight-softening", 0.0)
+        stage_started = time.perf_counter()
+        soften_highlights_inplace(
+            scattered,
+            coc,
+            cancel_check=cancel_check,
+        )
+        stage_seconds["highlight_softening"] = time.perf_counter() - stage_started
+        if stage_callback is not None:
+            stage_callback("highlight-softening", 1.0)
+        stage_started = time.perf_counter()
+        final_rgb = composite_highlights(
+            base_rgb,
+            final_rgb,
+            scattered,
+            row_chunk_height=row_chunk_height,
+            cancel_check=cancel_check,
+        )
+        stage_seconds["highlight_composite"] = time.perf_counter() - stage_started
+        del scattered
+        if stage_callback is not None:
+            stage_callback("highlight-composite", 1.0)
+    else:
+        stage_seconds["highlight_scatter"] = 0.0
+        stage_seconds["highlight_recovery"] = 0.0
+        stage_seconds["highlight_softening"] = 0.0
+        stage_seconds["highlight_composite"] = 0.0
+    del image_float, composite, coc, split, base_rgb, highlight_linear
     if cancel_check is not None:
         cancel_check()
     return BokehRenderResult(

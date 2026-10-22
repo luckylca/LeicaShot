@@ -4,9 +4,9 @@ Updated: 2026-10-22
 
 ## Current checkpoint
 
-- Stable integration branch: `develop`, currently based on `61a16be` (PR #21).
-- Active work: `feat/unified-processing-engine` — coordinating M9, Depth Anything V2, and BokehMe ARNet through one Python API and CLI invocation. The corrected original-depth → M9 → ARNet order passed 2048×1365 and full 5760×3840 real-photo runs. M9/Lab and bokeh outputs have been compared against the reference Kotlin engine on the physical Android phone.
-- Most recent merged PR: [#21, BokehMe ARNet CPU renderer](https://github.com/luckylca/LeicaShot/pull/21).
+- Stable integration branch: `develop`, currently at `371cafb` (PR #22).
+- Active work: `feat/bokeh-highlight-scatter` — adds reference-style highlight extraction, clipped-light recovery, field-dependent nine-blade optical scatter, highlight softening, and linear radiance compositing to the Python ARNet renderer.
+- Most recent merged PR: [#22, unified M9 + Depth + ARNet Python pipeline](https://github.com/luckylca/LeicaShot/pull/22).
 - Existing cross-platform CI passed on macOS, Ubuntu, and Windows with Python 3.11 and 3.13.
 - Previously merged model work: M9 + Lab fusion, Depth Anything V2 Small CPU adapter, SAM 2.1 encoder/decoder and bounded feature cache, ViTMatte tiled adapter, and BokehMe ARNet multiscale renderer.
 
@@ -16,7 +16,7 @@ Updated: 2026-10-22
 |---|---|---|
 | M9 series 3.0 epoch11 | `laika.m9.M9ColorEngine` | CPU inference, SHA-256 check, real-photo M9/Lab output and RSS report; local model at `/tmp/laika-models/leica-m9-v3-epoch11.fp16.onnx` |
 | Depth Anything V2 Small | `laika.depth.DepthAnythingV2Small` | CPU adapter and full-size real-photo depth report; pinned checkpoint and validated dynamic q64 ONNX are in `/tmp/laika-models` |
-| BokehMe ARNet | `laika.bokeh.BokehMeARNet` | Checkpoint-backed synthetic and real-photo parity; CPU multiscale output and RSS report; local ONNX at `/tmp/laika-models/legendary-1.0-arnet.fp16.onnx` |
+| BokehMe ARNet + optical highlights | `laika.bokeh.BokehMeARNet` and `laika.highlights` | CPU multiscale real-photo run with extraction, clipped-light recovery, field-dependent scatter and composite; Python/Kotlin intermediate fixtures numerically compared; local ONNX at `/tmp/laika-models/legendary-1.0-arnet.fp16.onnx` |
 | SAM 2.1 Hiera Tiny | `laika.subject.Sam2TinyOnnx` | Split model tensor parity and bounded embedding cache; real-photo mask/trimap/edge-quality validation remains incomplete |
 | ViTMatte Small | `laika.matting.ViTMatteOnnx` | Tiled CPU adapter and synthetic tests; real-photo edge-quality comparison and coordinated SAM integration remain incomplete |
 | GAIC | Not integrated | Checkpoint conversion, scoring, and crop application remain outstanding |
@@ -30,18 +30,19 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 - Standalone Depth Anything V2 real-photo run: 1,695,547,392 B process high-water RSS / 14.402 s total for a 5760×3840 source. This is not a combined-task result.
 - Corrected-order 2048×1365 end-to-end task: 1,094,172,672 B high-water RSS / 54.38 s wall.
 - Corrected-order 5760×3840 end-to-end task: 2,197,651,456 B high-water RSS / 605.43 s wall; ARNet's first full-resolution pass took 514.45 s. Both used Low Memory, CPUExecutionProvider, one intra-op thread, and all three hash-recorded models. The detailed [unified pipeline report](benchmarks/unified-pipeline-real-photo-2026-10-22.md) records concurrent host load and remaining quality-comparison limits.
-- Physical phone comparison: Python vs Kotlin M9/Lab on full-size output had PSNR 53.71 dB and 0.215 mean absolute 8-bit error. The 2048 bokeh comparison had PSNR 41.82 dB; the reference Kotlin run includes high-light scatter, still missing in Python. The report records device/model adaptations and image metrics.
+- With highlights integrated, the same source processed end-to-end at the explicit 2048×1365 output size in 197.85 s and 1,110,802,432 B process-tree peak RSS. Optical highlight scatter took 140.89 s. This is not a full-resolution highlight run or a Linux cgroup result. The [highlight report](benchmarks/bokeh-highlight-scatter-2026-10-22.md) records stage timings, row-chunk results, Kotlin fixture errors and the real-photo comparison.
+- Physical phone comparison: Python vs Kotlin M9/Lab on full-size output had PSNR 53.71 dB and 0.215 mean absolute 8-bit error. With the highlight stage enabled, the 2048×1365 bokeh comparison measured PSNR 41.38 dB, MAE 1.297 and p99 absolute channel error 8. This aggregate metric does not isolate highlight quality; the reference comparison limits are documented in the report.
 - No 4 GiB or 2 GiB full-pipeline acceptance result exists.
 
 ## Known gaps and current blocker
 
-- The unified engine, real-photo model chain, and first physical Kotlin comparisons are implemented. The bokeh image difference still includes known high-light, fusion-size, and Android-vs-macOS decode/runtime differences.
+- The unified engine and highlight scatter are integrated. Full 5760×3840 processing with the new highlight stage still needs measurement, and reference comparison remains affected by fusion-size and Android-vs-macOS decode/runtime differences.
 - RSS is close to, and slightly above, 2 GiB in decimal/roughly 2.05 GiB in binary units on this macOS run. It is not a Linux cgroup-limited result; no 2 GiB acceptance claim is made.
-- ARNet output currently omits highlight scattering and subject protection.
 - SAM, ViTMatte, and GAIC are not yet connected to the same processing request.
 - FastAPI tasks, cancellation endpoints, bounded server scheduling, and Web editing flow are not implemented.
+- Full-resolution highlight runtime is high on CPU; the 2048×1365 optical scatter stage took about 141 seconds. Native acceleration or a mathematically validated faster execution plan remains a priority.
 - The only connected Android device for reference runs is the physical ADB target; do not use the attached emulator. Production image processing remains Python.
 
 ## Next action
 
-Finish branch review, push and merge the unified-engine PR after CI, then immediately start `feat/bokeh-highlight-scatter`. Continue with subject protection, GAIC, API, Web, and Linux low-memory measurements; do not treat the unified-engine merge as project completion.
+Finish review and merge the highlight-scatter PR after CI, then immediately start `feat/subject-protection-integration`. Connect SAM, trimap and ViTMatte to the unified request, while keeping optical scatter speed optimization on the backlog. Continue with GAIC, API, Web, full-resolution and Linux low-memory measurements; do not treat the highlight PR as project completion.
