@@ -454,7 +454,20 @@ class LaikaProcessingEngine:
                 stage_started = time.perf_counter()
 
                 def on_bokeh_pass(index: int, total: int, _scale: float) -> None:
-                    notify("bokeh", 0.68 + 0.26 * index / max(total, 1))
+                    notify("bokeh", 0.69 + 0.12 * index / max(total, 1))
+
+                def on_bokeh_stage(stage: str, fraction: float) -> None:
+                    if stage == "highlight-extraction":
+                        progress = 0.68 + 0.01 * fraction
+                    elif stage == "highlight-recovery":
+                        progress = 0.82 + 0.01 * fraction
+                    elif stage == "highlight-scatter":
+                        progress = 0.83 + 0.08 * fraction
+                    elif stage == "highlight-softening":
+                        progress = 0.91 + 0.01 * fraction
+                    else:
+                        progress = 0.93
+                    notify("bokeh", progress)
 
                 try:
                     render = render_bokeh(
@@ -466,6 +479,7 @@ class LaikaProcessingEngine:
                         row_chunk_height=options.bokeh_row_chunk_height,
                         cancel_check=check_cancelled,
                         pass_callback=on_bokeh_pass,
+                        stage_callback=on_bokeh_stage,
                     )
                 finally:
                     if bokeh_owned:
@@ -478,6 +492,7 @@ class LaikaProcessingEngine:
                 )
                 models["bokeh"] = bokeh_engine.runtime_info.as_dict()
                 output_rgb = render.rgb
+                notify("bokeh", 0.93)
                 del normalized_depth, rgb, render
             else:
                 output_rgb = rgb

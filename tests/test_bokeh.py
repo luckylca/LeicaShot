@@ -202,6 +202,41 @@ def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() ->
     assert result.total_seconds >= 0
     assert "optics" in result.stage_seconds
     assert "composite" in result.stage_seconds
+    assert "highlight_extraction" in result.stage_seconds
+    assert "highlight_scatter" in result.stage_seconds
+
+
+def test_bokeh_renderer_integrates_highlight_scatter_after_arnet() -> None:
+    class IdentityModel:
+        def infer(self, rgb: np.ndarray, defocus: np.ndarray) -> Any:
+            height, width = rgb.shape[:2]
+            return SimpleNamespace(
+                rgb_nchw=rgb.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+            )
+
+    rgb = np.zeros((192, 192, 3), dtype=np.uint8)
+    rgb[94:98, 94:98] = (255, 220, 160)
+    depth = np.full((192, 192), 0.8, dtype=np.float32)
+    stages: list[tuple[str, float]] = []
+
+    result = render_bokeh(
+        rgb,
+        depth,
+        0.1,
+        2.8,
+        IdentityModel(),
+        row_chunk_height=17,
+        stage_callback=lambda name, fraction: stages.append((name, fraction)),
+    )
+
+    assert result.rgb.shape == rgb.shape
+    assert result.stage_seconds["highlight_extraction"] >= 0.0
+    assert result.stage_seconds["highlight_scatter"] > 0.0
+    assert "highlight-scatter" in {name for name, _ in stages}
+    assert result.rgb[94:98, 94:98].max() > 0
+    outside = result.rgb[:, :, 0].copy()
+    outside[94:98, 94:98] = 0
+    assert np.count_nonzero(outside) > 0
 
 
 def test_explicit_rgb_resize_uses_opencv_cubic_and_keeps_rgb_order() -> None:

@@ -38,12 +38,20 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - Progress callbacks run at stage boundaries. Cancellation is checked between stages, during M9 row fusion, and during ARNet compositing; ONNX model runs themselves are not preempted mid-inference.
 - PNG output is written to a temporary file beside the destination and atomically replaced only after successful processing.
 
+## Highlight stage integrated on `feat/bokeh-highlight-scatter`
+
+- `render_bokeh` now splits the M9/Lab RGB frame into an 8-bit base and float32 linear highlight surplus. ARNet renders the base plate; reference-style depth-layered highlight scatter is then recovered, softened and radiance-composited in linear light.
+- Highlight extraction records compact and diffuse bright regions separately. Clipped-light recovery is restricted to clipped, defocused sources and uses a 4-pixel coarse density table. The optical kernel uses the reference 8×8 coverage sampling and nine-blade pupil, with spatially varying pupil shape interpolated from the 5×5 field grid.
+- Highlight stage progress and cancellation checks are wired through the same SDK callback. Buffers are owned by one `render_bokeh` call and released before export; no model or image asset was added to Git.
+- In `ProcessingOptions`, `bokeh_row_chunk_height=512` gave a useful CPU/memory tradeoff on the measured 2048×1365 photo. The current default remains 128 to preserve the lower-working-set baseline; deployments can explicitly select another value. Neither setting is asserted to be optimal on other hosts.
+
 ## Current integration limits
 
 - M9 low-memory mode decodes its source for model preprocessing and again for exact Lab detail fusion. The combined path then decodes the intermediate M9 image once for shared depth/bokeh input. This preserves existing M9 behavior but is not yet the minimum-decode design.
 - Depth inference returns a full-size float32 depth map. Normalization currently sorts a copy to reproduce percentile semantics; future profiling should replace this only if an exact memory-bounded percentile implementation is demonstrated.
 - ARNet's first full-scale pass is the dominant Bokeh inference time. The current renderer keeps one full-size float32 source and composite and resizes each ARNet pass output back to the requested raster. Tiled full-global equivalence has not been demonstrated.
-- The current renderer only makes the depth-guided ARNet plate. Highlight scatter, SAM/ViTMatte foreground protection, and GAIC composition are separate pending stages.
+- SAM/ViTMatte foreground restoration and GAIC composition remain outside the shared request. A real 5760×3840 run with the new highlight stage has not yet been measured.
+- Field-dependent optical scatter is the current CPU bottleneck: 140.89 s on the 2048×1365 real-photo task. It evaluates all required depth layers and the 5×5 pupil field; no reduced-resolution shortcut is used. Exact-preserving CPU optimization and a full-resolution RSS run remain outstanding.
 
 ## Real-photo verification
 
@@ -55,5 +63,9 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [x] Run pinned M9, Depth, and ARNet models in one `process_file()` call on the same real source photograph; Depth consumes the original and ARNet consumes the M9 result.
 - [x] Record explicit 2048×1365 and original-size 5760×3840 output timing/RSS after correcting depth/color order.
 - [x] Compare fused color and bokeh output to reference Kotlin results using the physical device through `adb -s a4976c80`; the numerical results and local asset/name adaptations are recorded in the pipeline report. The Android emulator was not used.
-- [x] Python full suite (127 tests), Ruff formatting/lint, and package wheel build pass locally.
+- [x] Python full suite (139 tests), Ruff formatting/lint, and format check pass locally.
+- [x] A CPU-only `color+bokeh` request ran all three pinned ONNX models on the same 5760×3840 source, with explicit output 2048×1365.
+- [x] Process-tree RSS and per-stage timings recorded for the complete task and standalone 128/512-row bokeh runs.
+- [x] Intermediate highlight split, recovery, field scatter and softening were compared numerically against Kotlin fixtures executed on the physical ADB device; detailed limits and metrics are in [the highlight report](benchmarks/bokeh-highlight-scatter-2026-10-22.md).
 - [ ] Six-platform GitHub Actions matrix passes before merge.
+- [ ] Full-resolution highlight run and Linux cgroup memory acceptance remain outstanding.
