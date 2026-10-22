@@ -451,22 +451,17 @@ def _scatter_field_optical(
                     np.float32(0.0),
                     np.float32(1.0) - np.abs(source_coc - np.float32(level)),
                 )
-                weighted = np.empty(source_high.shape, dtype=np.float64)
-                np.multiply(source_high, layer_weight[:, :, None], out=weighted)
+                weighted = None
+                if np.any(source_high):
+                    weighted = np.empty(source_high.shape, dtype=np.float64)
+                    np.multiply(source_high, layer_weight[:, :, None], out=weighted)
                 mass = cv2.filter2D(
                     layer_weight.astype(np.float64),
                     ddepth=cv2.CV_64F,
                     kernel=kernel,
                     borderType=cv2.BORDER_REFLECT_101,
                 )
-                radiance = cv2.filter2D(
-                    weighted,
-                    ddepth=cv2.CV_64F,
-                    kernel=kernel,
-                    borderType=cv2.BORDER_REFLECT_101,
-                )
                 node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]
-                node_radiance = radiance[half : half + y1 - y0, half : half + x1 - x0]
                 node_weight = (
                     wy[y0:y1].astype(np.float64)[:, None]
                     * wx[x0:x1].astype(np.float64)[None, :]
@@ -474,7 +469,20 @@ def _scatter_field_optical(
                 row_offset = y0 - out_y0
                 rows = slice(row_offset, row_offset + y1 - y0)
                 mass_total[rows, x0:x1] += node_mass * node_weight
-                radiance_total[rows, x0:x1] += node_radiance * node_weight[:, :, None]
+                # Keep the mass filter for occlusion; only empty radiance is skipped.
+                if weighted is not None and np.any(weighted):
+                    radiance = cv2.filter2D(
+                        weighted,
+                        ddepth=cv2.CV_64F,
+                        kernel=kernel,
+                        borderType=cv2.BORDER_REFLECT_101,
+                    )
+                    node_radiance = radiance[
+                        half : half + y1 - y0, half : half + x1 - x0
+                    ]
+                    radiance_total[rows, x0:x1] += (
+                        node_radiance * node_weight[:, :, None]
+                    )
                 del (
                     selection,
                     source_high,
@@ -482,7 +490,6 @@ def _scatter_field_optical(
                     layer_weight,
                     weighted,
                     mass,
-                    radiance,
                 )
 
             receiver_coc = depth[out_y0:out_y1] * np.float32(radius_scale)
