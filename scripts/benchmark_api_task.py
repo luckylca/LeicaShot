@@ -1,0 +1,316 @@
+#!/usr/bin/env python3
+"""Benchmark a real task through a local Uvicorn API worker."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import mimetypes
+import os
+import platform
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+
+class ServerProcessPeak:
+    """Sample RSS and CPU for the API server and all child processes."""
+
+    def __init__(self, pid: int, interval_seconds: float = 0.01) -> None:
+        import psutil
+
+        self.pid = pid
+        self.interval_seconds = interval_seconds
+        self.peak_rss_bytes = 0
+        self.peak_uss_bytes: int | None = None
+        self.cpu_seconds_before = 0.0
+        self.cpu_seconds_after = 0.0
+        self._psutil = psutil
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._sample, daemon=True)
+
+    def _sample(self) -> None:
+        while not self._stop.is_set():
+            try:
+                root = self._psutil.Process(self.pid)
+                processes = [root, *root.children(recursive=True)]
+            except (self._psutil.NoSuchProcess, self._psutil.AccessDenied):
+                break
+            rss = 0
+            uss = 0
+            uss_available = True
+            for process in processes:
+                try:
+                    rss += process.memory_info().rss
+                    uss += process.memory_full_info().uss
+                except (
+                    self._psutil.NoSuchProcess,
+                    self._psutil.AccessDenied,
+                    OSError,
+                    RuntimeError,
+                ):
+                    uss_available = False
+            self.peak_rss_bytes = max(self.peak_rss_bytes, rss)
+            if uss_available:
+                self.peak_uss_bytes = max(self.peak_uss_bytes or 0, uss)
+            try:
+                times = root.cpu_times()
+                self.cpu_seconds_after = times.user + times.system
+            except (self._psutil.NoSuchProcess, self._psutil.AccessDenied):
+                pass
+            self._stop.wait(self.interval_seconds)
+
+    def __enter__(self) -> ServerProcessPeak:
+        self._thread.start()
+        time.sleep(0.02)
+        try:
+            process = self._psutil.Process(self.pid)
+            times = process.cpu_times()
+            self.cpu_seconds_before = times.user + times.system
+        except (self._psutil.NoSuchProcess, self._psutil.AccessDenied):
+            pass
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._stop.set()
+        self._thread.join()
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _reserve_port() -> int:
+    with socket.socket() as server_socket:
+        server_socket.bind(("127.0.0.1", 0))
+        return int(server_socket.getsockname()[1])
+
+
+def _server_process_tree(pid: int) -> list[Any]:
+    import psutil
+
+    try:
+        root = psutil.Process(pid)
+        return [root, *root.children(recursive=True)]
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return []
+
+
+def run(args: argparse.Namespace) -> dict[str, Any]:
+    import httpx
+    import psutil
+
+    from laika.api import ApiSettings
+    from laika.benchmark import _cgroup_v2_snapshot
+
+    source = Path(args.input)
+    options = json.loads(args.options)
+    if not isinstance(options, dict):
+        raise ValueError("--options must be a JSON object")
+    settings = ApiSettings.from_environment()
+    if "strategy" not in options:
+        options["strategy"] = settings.default_strategy
+    if "mode" not in options:
+        options["mode"] = "color+bokeh"
+    body = json.dumps(options, separators=(",", ":"))
+    host = "127.0.0.1"
+    port = _reserve_port()
+    base_url = f"http://{host}:{port}"
+    child_env = dict(os.environ)
+    child_env["LAIKA_API_HOST"] = host
+    child_env["LAIKA_API_PORT"] = str(port)
+    temporary_storage: Path | None = None
+    if not child_env.get("LAIKA_API_STORAGE"):
+        temporary_storage = Path(tempfile.mkdtemp(prefix="laikashot-api-bench-"))
+        child_env["LAIKA_API_STORAGE"] = str(temporary_storage)
+
+    command = [
+        sys.executable,
+        "-m",
+        "uvicorn",
+        "laika.api:create_app",
+        "--factory",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--workers",
+        "1",
+        "--log-level",
+        "warning",
+    ]
+    server = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=child_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    peak = ServerProcessPeak(server.pid)
+    available_before = psutil.virtual_memory().available
+    cgroup_before = _cgroup_v2_snapshot()
+    started = time.perf_counter()
+    report: dict[str, Any] | None = None
+    try:
+        with peak, httpx.Client(timeout=30.0) as client:
+            for _ in range(200):
+                if server.poll() is not None:
+                    break
+                try:
+                    if client.get(f"{base_url}/api/v1/health").status_code == 200:
+                        break
+                except httpx.HTTPError:
+                    time.sleep(0.1)
+            else:
+                raise TimeoutError("local Laika API did not become healthy")
+            if server.poll() is not None:
+                logs = server.communicate(timeout=1)[0]
+                raise RuntimeError(f"Laika API exited during startup:\n{logs}")
+
+            started = time.perf_counter()
+            media_type = (
+                mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+            )
+            with source.open("rb") as image_file:
+                created = client.post(
+                    f"{base_url}/api/v1/tasks",
+                    data={"options": body},
+                    files={"file": (source.name, image_file, media_type)},
+                )
+            if created.status_code != 202:
+                raise RuntimeError(
+                    f"API task creation returned {created.status_code}: {created.text}"
+                )
+            task = created.json()
+            headers = {"X-Laika-Task-Token": task["access_token"]}
+            deadline = time.monotonic() + args.timeout_seconds
+            while time.monotonic() < deadline:
+                status_response = client.get(
+                    f"{base_url}{task['status_url']}", headers=headers
+                )
+                status_response.raise_for_status()
+                status = status_response.json()
+                if status["status"] in ("completed", "failed", "cancelled"):
+                    break
+                time.sleep(args.poll_interval)
+            else:
+                client.post(f"{base_url}{task['cancel_url']}", headers=headers)
+                raise TimeoutError(f"API task exceeded {args.timeout_seconds} seconds")
+            task_wall_seconds = time.perf_counter() - started
+            if status["status"] != "completed":
+                raise RuntimeError(f"API task {status['status']}: {status['error']}")
+
+            download_hash = hashlib.sha256()
+            output_bytes = 0
+            with client.stream(
+                "GET", f"{base_url}{status['download_url']}", headers=headers
+            ) as response:
+                response.raise_for_status()
+                destination = Path(args.save_output) if args.save_output else None
+                if destination is not None:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                output_stream = destination.open("wb") if destination else None
+                try:
+                    for block in response.iter_bytes(1024 * 1024):
+                        download_hash.update(block)
+                        output_bytes += len(block)
+                        if output_stream is not None:
+                            output_stream.write(block)
+                finally:
+                    if output_stream is not None:
+                        output_stream.close()
+
+            host_info = {
+                "platform": platform.platform(),
+                "processor": platform.processor(),
+                "cpu_count_logical": psutil.cpu_count(logical=True),
+                "memory_total_bytes": psutil.virtual_memory().total,
+                "memory_available_before_bytes": available_before,
+            }
+            report = {
+                "input": str(source),
+                "input_sha256": _sha256(source),
+                "mode": options["mode"],
+                "strategy": options["strategy"],
+                "options": options,
+                "host": host_info,
+                "api_versioned_path": "/api/v1/tasks",
+                "runtime": {
+                    "python": sys.version,
+                    "platform": platform.platform(),
+                },
+                "model_results": status["result"],
+                "stage_seconds": status["result"].get("stage_seconds", {}),
+                "task_wall_seconds": task_wall_seconds,
+                "server_process_tree_peak_rss_bytes": peak.peak_rss_bytes,
+                "server_process_tree_peak_uss_bytes": peak.peak_uss_bytes,
+                "server_cpu_seconds": max(
+                    0.0, peak.cpu_seconds_after - peak.cpu_seconds_before
+                ),
+                "server_process_count": len(_server_process_tree(server.pid)),
+                "cgroup_v2_before": cgroup_before,
+                "cgroup_v2_after": _cgroup_v2_snapshot(),
+                "downloaded_output_bytes": output_bytes,
+                "output_sha256": download_hash.hexdigest(),
+                "saved_output": str(destination) if destination else None,
+            }
+    finally:
+        if server.poll() is None:
+            server.terminate()
+        try:
+            server_logs = server.communicate(timeout=30)[0]
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server_logs = server.communicate()[0]
+        if server.returncode not in (0, -15, 143) and report is None:
+            raise RuntimeError(f"Laika API process failed:\n{server_logs}")
+        if temporary_storage is not None:
+            temporary_storage.rmdir()
+
+    if report is None:
+        raise RuntimeError("API benchmark ended without a completed task report")
+    return report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", type=Path)
+    parser.add_argument(
+        "--options",
+        default='{"mode":"color+bokeh","strategy":"low-memory"}',
+        help="JSON ProcessingOptions object, including an optional selected crop",
+    )
+    parser.add_argument("--timeout-seconds", type=float, default=1800.0)
+    parser.add_argument("--poll-interval", type=float, default=0.2)
+    parser.add_argument("--save-output", type=Path)
+    parser.add_argument("--report", type=Path)
+    args = parser.parse_args()
+    if args.timeout_seconds <= 0 or args.poll_interval <= 0:
+        parser.error("timeout and poll interval must be positive")
+    report = run(args)
+    serialized = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
+    if args.report:
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(serialized + "\n", encoding="utf-8")
+    print(serialized)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

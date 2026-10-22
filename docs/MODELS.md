@@ -214,9 +214,11 @@ the same top crop boxes from the actual photo; score deltas differed by at most
 matched exactly. See the
 [GAIC real-photo report](../docs/benchmarks/gaic-real-photo-2026-10-22.md).
 
-This branch exposes suggestion and crop operations through the shared Python
-engine; composition is not yet an option inside `ProcessingOptions` and the
-FastAPI/Web editor is still pending.
+The shared engine and CLI expose suggestion and crop operations; `ProcessingOptions.crop`
+applies a selected crop during a render. The FastAPI task adapter accepts that
+explicit crop, while a separate HTTP suggestion route and Web crop editor are
+still pending. See the [API task benchmark](benchmarks/api-task-real-photo-2026-10-22.md)
+for the first real M9 + Depth + ARNet upload-to-download run.
 
 Install the optional inference dependencies with `pip install -e '.[inference]'`. The `DepthAnythingV2Small` Python adapter accepts an HWC `uint8` RGB array and returns a float32 depth map at the same width and height. It applies EXIF orientation only when the caller decodes an image; `laika depth` handles orientation, format checks, upload-byte and pixel limits, and writes a NumPy `.npy` array atomically. Defaults cap uploads at 50 MiB, source images at 40 million pixels, and derived network rasters at 4 million pixels. Over-limit requests fail instead of silently changing analysis dimensions. The adapter accepts only dynamic exports with a matching `.onnx.validation.json` report and graph SHA-256. The session uses CPUExecutionProvider and releases its native buffers on `close()` or context exit.
 
