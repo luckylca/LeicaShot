@@ -13,6 +13,7 @@ from typing import Any
 
 import psutil
 
+from laika.cgroup import memory_stats as _cgroup_memory
 from laika.composition import CompositionCrop
 from laika.processing import LaikaProcessingEngine, ProcessingOptions
 
@@ -171,6 +172,7 @@ def main() -> int:
         "stage_seconds": result.stage_seconds,
         "task_wall_seconds": time.perf_counter() - started,
         "process_tree_peak_rss_bytes": peak.peak_bytes,
+        "cgroup_memory": _cgroup_memory(),
         "output_bytes": result.output_bytes,
     }
     print(json.dumps(report, ensure_ascii=False, sort_keys=True))
