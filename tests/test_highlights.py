@@ -135,6 +135,47 @@ def test_field_optics_preserves_constant_radiance_through_signed_depth_layers() 
     np.testing.assert_allclose(output, high, rtol=0, atol=4e-6)
 
 
+@pytest.mark.parametrize("row_chunk_height", [1, 7, 64])
+def test_chunked_residual_scatter_combination_is_bitwise_legacy_exact(
+    row_chunk_height: int,
+) -> None:
+    rng = np.random.default_rng(1701)
+    output = rng.random((13, 17, 3), dtype=np.float32)
+    own = rng.random((13, 17, 3), dtype=np.float32)
+    coverage = rng.random((13, 17), dtype=np.float32)
+    expected = output.copy()
+    expected += own * (1.0 - coverage[:, :, None])
+
+    actual = output.copy()
+    highlights._combine_own_into_output(actual, own, coverage, row_chunk_height)
+
+    np.testing.assert_array_equal(actual, expected)
+
+
+def test_field_optics_does_not_allocate_an_unused_full_frame_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    high = np.zeros((9, 11, 3), dtype=np.float32)
+    high[4, 5] = (0.8, 0.5, 0.2)
+    coc = np.ones((9, 11), dtype=np.float32)
+    original_zeros_like = np.zeros_like
+    allocated_shapes: list[tuple[int, ...]] = []
+
+    def counted_zeros_like(
+        value: np.ndarray, *args: object, **kwargs: object
+    ) -> np.ndarray:
+        result = original_zeros_like(value, *args, **kwargs)
+        if value.shape == high.shape:
+            allocated_shapes.append(result.shape)
+        return result
+
+    monkeypatch.setattr(highlights.np, "zeros_like", counted_zeros_like)
+    result = scatter_highlights(high, coc, 2.8, field_optics=True, row_chunk_height=3)
+
+    assert result.shape == high.shape
+    assert allocated_shapes == [high.shape, high.shape]
+
+
 def test_scatter_and_composite_honor_cancellation_and_zero_light_identity() -> None:
     def cancelled() -> None:
         raise RuntimeError("cancelled")

@@ -6,8 +6,10 @@ import argparse
 import hashlib
 import json
 import platform
+import sys
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -25,18 +27,37 @@ class ProcessTreePeak:
         self.process = psutil.Process()
         self.interval_seconds = interval_seconds
         self.peak_bytes = 0
+        self._stage = "startup"
+        self._stage_peaks: dict[str, int] = {}
+        self._stage_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._sample, daemon=True)
 
+    def set_stage(self, stage: str) -> None:
+        with self._stage_lock:
+            self._stage = stage
+
+    def stage_peaks(self) -> dict[str, int]:
+        with self._stage_lock:
+            return dict(self._stage_peaks)
+
+    def current_bytes(self) -> int:
+        total = 0
+        for process in [self.process, *self.process.children(recursive=True)]:
+            try:
+                total += process.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return total
+
     def _sample(self) -> None:
         while not self._stop.is_set():
-            total = 0
-            for process in [self.process, *self.process.children(recursive=True)]:
-                try:
-                    total += process.memory_info().rss
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
+            total = self.current_bytes()
             self.peak_bytes = max(self.peak_bytes, total)
+            with self._stage_lock:
+                self._stage_peaks[self._stage] = max(
+                    self._stage_peaks.get(self._stage, 0), total
+                )
             self._stop.wait(self.interval_seconds)
 
     def __enter__(self) -> ProcessTreePeak:
@@ -106,6 +127,11 @@ def main() -> int:
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
     parser.add_argument("--bokeh-row-chunk-height", type=int, default=128)
+    parser.add_argument(
+        "--progress-log",
+        type=Path,
+        help="append progress and sampled RSS records, including before a cgroup OOM",
+    )
     args = parser.parse_args()
     if (args.width is None) != (args.height is None):
         parser.error("--width and --height must be supplied together")
@@ -120,7 +146,13 @@ def main() -> int:
             parser.error("--subject-point must use normalized X,Y coordinates")
 
     started = time.perf_counter()
+    progress_context = (
+        args.progress_log.open("w", encoding="utf-8")
+        if args.progress_log is not None
+        else nullcontext(None)
+    )
     with (
+        progress_context as progress_stream,
         LaikaProcessingEngine(
             m9_model_path=args.m9_model,
             depth_model_path=args.depth_model,
@@ -132,6 +164,43 @@ def main() -> int:
         ) as engine,
         ProcessTreePeak() as peak,
     ):
+
+        def on_progress(event: Any) -> None:
+            if event.stage == "bokeh":
+                if event.fraction < 0.69:
+                    stage = "bokeh.highlight_extraction"
+                elif event.fraction < 0.82:
+                    stage = "bokeh.arnet"
+                elif event.fraction < 0.83:
+                    stage = "bokeh.highlight_recovery"
+                elif event.fraction < 0.91:
+                    stage = "bokeh.highlight_scatter"
+                elif event.fraction < 0.92:
+                    stage = "bokeh.highlight_softening"
+                elif event.fraction < 0.94:
+                    stage = "bokeh.highlight_composite"
+                else:
+                    stage = "bokeh.finalize"
+            else:
+                stage = event.stage
+            peak.set_stage(stage)
+            if progress_stream is not None:
+                record = {
+                    "stage": stage,
+                    "fraction": event.fraction,
+                    "elapsed_seconds": event.elapsed_seconds,
+                    "process_tree_rss_bytes": peak.current_bytes(),
+                    "cgroup_memory": _cgroup_memory(),
+                }
+                progress_stream.write(json.dumps(record, sort_keys=True) + "\n")
+                progress_stream.flush()
+            print(
+                f"progress stage={stage} fraction={event.fraction:.4f} "
+                f"rss={peak.current_bytes()}",
+                file=sys.stderr,
+                flush=True,
+            )
+
         result = engine.process_file(
             args.input,
             args.output,
@@ -149,6 +218,7 @@ def main() -> int:
                 matte_tile_size=args.matte_tile_size,
                 crop=args.crop,
             ),
+            progress_callback=on_progress,
         )
     report = {
         "input": str(args.input),
@@ -172,6 +242,7 @@ def main() -> int:
         "stage_seconds": result.stage_seconds,
         "task_wall_seconds": time.perf_counter() - started,
         "process_tree_peak_rss_bytes": peak.peak_bytes,
+        "process_tree_stage_peak_rss_bytes": peak.stage_peaks(),
         "cgroup_memory": _cgroup_memory(),
         "output_bytes": result.output_bytes,
     }
