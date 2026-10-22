@@ -31,21 +31,21 @@ Both runs used the same 5760×3840 night photo (`4e6661606c195b2462c0f2321a7feef
 - The last persisted progress record was the start of the first full-scale ARNet call. At that checkpoint cgroup current was 1,202,167,808 B, prior cgroup peak was 1,667,424,256 B, and process-tree RSS was 864,276,480 B.
 - The killed cgroup did not preserve its final memory peak. No output was produced.
 
-### With ARNet tiling and row-bounded residual scatter
+### Full-resolution tiled run and row chunk experiment
 
-The real run has completed all ARNet scales and entered optical highlight scatter. At the latest checkpoint it is still running; no final result, complete-task time, or final peak is claimed yet.
+Both full-size attempts use the same 5760×3840 source with no output-size override, the same verified models, a 4 GiB Ubuntu ARM64 Lima guest, two vCPUs, CPUExecutionProvider, one ONNX thread, and a 3 GiB task cgroup.
 
-- Latest persisted checkpoint: scatter progress `0.8314` of the scatter stage.
-- cgroup current: 2,431,787,008 B; cgroup peak so far: 2,740,789,248 B of 3,221,225,472 B; process-tree RSS at the latest progress callback: 2,063,863,808 B.
-- OOM counters remained zero. The final output has not yet been exported.
+The first tiled attempt used the existing 128-row scatter default. It completed every ARNet scale and entered optical scatter, but optical scatter remained too slow for this validation window. At elapsed 1,055.6 s, the latest saved record showed scatter progress `0.83414`, cgroup current 2,543,575,040 B, cgroup peak 2,740,789,248 B, process-tree RSS 2,175,488,000 B, and zero OOM events. The run was deliberately stopped to test the previously measured faster 512-row setting. Docker reports exit 137 from the stop timeout and `OOMKilled=false`; this was an incomplete run, not an OOM result, and it produced no output.
 
-The standalone 2048×1365 scatter stage previously took 286.43 s on macOS and 180.70 s in a separate Linux cgroup pipeline, so full-resolution optical scatter is expected to dominate this run. The run will be reported as a complete pipeline only after PNG export succeeds and its dimensions, hash, stage timings, process-tree peak, and final cgroup events are collected.
+The second tiled attempt uses a 512-row scatter chunk. At the latest checkpoint (elapsed 612.1 s), the complete M9, Depth, and all ARNet scales had finished; optical highlight scatter was still running at progress `0.83276`. Cgroup current was 2,340,409,344 B, cgroup peak 2,662,400,000 B of 3,221,225,472 B, process-tree RSS 2,152,103,936 B, and OOM counters were zero. The task had not exported the final PNG, so total task time, final peak and output hash are not yet available.
+
+The 512-row setting follows a real 2048×1365 paired run where scatter was 15.7% faster than 128 rows with byte-identical output and 13.6 MB more sampled process-tree RSS. The full-resolution run is the first cgroup check of that tradeoff at source size. The 5760×3840 ARNet inference path itself completed every scale in this run; the remaining highlighter work is now the run-time bottleneck. Do not treat either incomplete scatter run as a complete-task acceptance result.
 
 ## Regression and limits
 
 - `tests/test_bokeh.py` compares a full-frame and four-tile real-shaped fake-session result exactly and checks that odd dimensions retain the validated full path.
 - `tests/test_highlights.py` verifies the chunked residual-combination expression is bitwise identical to the previous full-array expression and that field-optical dispatch avoids the unused full RGB allocation.
 - Full local suite: 182 passed with one existing Starlette/httpx deprecation warning. Ruff lint, format, script help, and `git diff --check` passed.
-- The full-size tiled task remains active and uncommitted at this report snapshot; update this section before merging. Do not mark the 8 GiB complete-function target or any 4 GiB full-system acceptance as achieved from this in-progress run.
+- The 512-row full-size tiled task remains active at this report snapshot. Do not mark the 8 GiB complete-function target or any 4 GiB full-system acceptance as achieved from this in-progress run.
 - Tiling currently applies only to even dimensions. The full-resolution output canvas is retained, but full 5760×3840 tile-vs-frame image parity cannot be measured under the same memory limit because the reference full-frame model call OOMs.
 - The scatter optimization is exact per pixel in unit fixtures. A completed real full-resolution photo comparison is still pending.
