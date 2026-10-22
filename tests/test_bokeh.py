@@ -175,12 +175,27 @@ def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() ->
     y = np.linspace(0.0, 1.0, 500, dtype=np.float32)[:, None]
     depth = np.broadcast_to(y, (500, 700)).copy()
     model = DarkenModel()
-    result = render_bokeh(rgb, depth, 0.5, 0.95, model, row_chunk_height=13)
+    completed_passes: list[tuple[int, int, float]] = []
+    result = render_bokeh(
+        rgb,
+        depth,
+        0.5,
+        0.95,
+        model,
+        row_chunk_height=13,
+        pass_callback=lambda index, total, scale: completed_passes.append(
+            (index, total, scale)
+        ),
+    )
 
     assert result.rgb.shape == rgb.shape
     assert result.rgb.dtype == np.uint8
     assert result.scales[0] == 1.0
     assert len(result.scales) == len(model.calls) >= 2
+    assert [item[0] for item in completed_passes] == list(
+        range(1, len(result.scales) + 1)
+    )
+    assert all(item[1] == len(result.scales) for item in completed_passes)
     assert model.calls[0] == (700, 500)
     assert np.all(result.rgb <= rgb)
     assert np.any(result.rgb < rgb)

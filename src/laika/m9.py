@@ -8,6 +8,7 @@ import os
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -418,6 +419,8 @@ class M9ColorEngine:
         self,
         input_path: str | os.PathLike[str],
         output_path: str | os.PathLike[str],
+        *,
+        cancel_check: Callable[[], None] | None = None,
     ) -> M9ColorResult:
         """Process JPEG/PNG/WebP input and write full-oriented-size PNG or JPEG."""
         source_path = Path(input_path)
@@ -430,13 +433,21 @@ class M9ColorEngine:
         output_format = "PNG" if suffix == ".png" else "JPEG"
 
         with self._lock:
-            return self._process_locked(source_path, destination, output_format)
+            return self._process_locked(
+                source_path, destination, output_format, cancel_check
+            )
 
     def _process_locked(
-        self, source_path: Path, destination: Path, output_format: str
+        self,
+        source_path: Path,
+        destination: Path,
+        output_format: str,
+        cancel_check: Callable[[], None] | None,
     ) -> M9ColorResult:
         import numpy as np
 
+        if cancel_check is not None:
+            cancel_check()
         started = time.perf_counter()
         stages: dict[str, float] = {}
         model_width = model_height = 0
@@ -463,6 +474,8 @@ class M9ColorEngine:
                 prediction = predictor.infer_tensor(tensor, model_width, model_height)
             finally:
                 predictor.close()
+            if cancel_check is not None:
+                cancel_check()
             stages["inference"] = prediction.inference_seconds
             model_sha256 = predictor.model_sha256
             runtime_version = predictor.runtime_version
@@ -532,6 +545,7 @@ class M9ColorEngine:
                 sigma_l=M9_SIGMA_L,
                 sigma_ab=M9_SIGMA_AB,
                 row_chunk_height=self.row_chunk_height,
+                cancel_check=cancel_check,
             )
             stages["lab_fusion"] = time.perf_counter() - stage
             del original_rgb, predicted_full
@@ -561,6 +575,7 @@ class M9ColorEngine:
                         sigma_l=M9_SIGMA_L,
                         sigma_ab=M9_SIGMA_AB,
                         row_chunk_height=self.row_chunk_height,
+                        cancel_check=cancel_check,
                     )
                     writer.finish()
                     del original_rgb, predicted_full

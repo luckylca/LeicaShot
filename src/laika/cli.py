@@ -30,6 +30,11 @@ from laika.depth import (
 )
 from laika.engine import ImageInputError, ImageLimitError, ImageLimits, process_image
 from laika.m9 import M9ColorEngine, M9InferenceError
+from laika.processing import (
+    LaikaProcessingEngine,
+    ProcessingError,
+    ProcessingOptions,
+)
 
 SUPPORTED_INPUT_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
 
@@ -124,6 +129,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bokeh_parser.add_argument("--max-upload-bytes", type=int, default=50 * 1024 * 1024)
     bokeh_parser.add_argument("--max-pixels", type=int, default=40_000_000)
+    pipeline_parser = subparsers.add_parser(
+        "pipeline",
+        help="run coordinated M9 color, depth, and ARNet processing",
+    )
+    pipeline_parser.add_argument("input", help="input JPEG, PNG, or WebP")
+    pipeline_parser.add_argument("output", help="full-size output .png path")
+    pipeline_parser.add_argument(
+        "--mode",
+        choices=("color", "bokeh", "color+bokeh"),
+        default="color+bokeh",
+    )
+    pipeline_parser.add_argument("--m9-model", help="local M9 ONNX model path")
+    pipeline_parser.add_argument("--depth-model", help="validated depth ONNX path")
+    pipeline_parser.add_argument("--bokeh-model", help="validated ARNet ONNX path")
+    pipeline_parser.add_argument(
+        "--strategy", choices=("low-memory", "balanced"), default="low-memory"
+    )
+    pipeline_parser.add_argument("--threads", type=int, default=None)
+    pipeline_parser.add_argument("--focus-x", type=float, default=0.5)
+    pipeline_parser.add_argument("--focus-y", type=float, default=0.5)
+    pipeline_parser.add_argument(
+        "--aperture", type=float, choices=APERTURES, default=2.8
+    )
+    pipeline_parser.add_argument("--width", type=int)
+    pipeline_parser.add_argument("--height", type=int)
+    pipeline_parser.add_argument("--m9-row-chunk-height", type=int, default=512)
+    pipeline_parser.add_argument("--bokeh-row-chunk-height", type=int, default=128)
+    pipeline_parser.add_argument(
+        "--max-upload-bytes", type=int, default=50 * 1024 * 1024
+    )
+    pipeline_parser.add_argument("--max-pixels", type=int, default=40_000_000)
+    pipeline_parser.add_argument("--max-network-pixels", type=int, default=4_000_000)
+    pipeline_parser.add_argument("--progress", action="store_true")
     return parser
 
 
@@ -406,6 +444,54 @@ def _run_depth(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_pipeline(args: argparse.Namespace) -> int:
+    if (args.width is None) != (args.height is None):
+        raise ValueError("--width and --height must be supplied together")
+    output_size = (args.width, args.height) if args.width is not None else None
+    options = ProcessingOptions(
+        mode=args.mode,
+        strategy=args.strategy,
+        focus_x=args.focus_x,
+        focus_y=args.focus_y,
+        aperture=args.aperture,
+        output_size=output_size,
+        max_upload_bytes=args.max_upload_bytes,
+        max_pixels=args.max_pixels,
+        max_network_pixels=args.max_network_pixels,
+        m9_row_chunk_height=args.m9_row_chunk_height,
+        bokeh_row_chunk_height=args.bokeh_row_chunk_height,
+    )
+    with LaikaProcessingEngine(
+        m9_model_path=args.m9_model,
+        depth_model_path=args.depth_model,
+        bokeh_model_path=args.bokeh_model,
+        strategy=args.strategy,
+        threads=args.threads,
+        max_upload_bytes=args.max_upload_bytes,
+        max_pixels=args.max_pixels,
+        max_network_pixels=args.max_network_pixels,
+    ) as engine:
+        progress_callback = None
+        if args.progress:
+
+            def report_progress(event: Any) -> None:
+                print(
+                    json.dumps(event.as_dict(), sort_keys=True),
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+            progress_callback = report_progress
+        result = engine.process_file(
+            args.input,
+            args.output,
+            options=options,
+            progress_callback=progress_callback,
+        )
+    print(json.dumps(result.as_dict(), ensure_ascii=False, sort_keys=True))
+    return 0
+
+
 def main() -> int:
     args = build_parser().parse_args()
     if args.command == "depth":
@@ -439,6 +525,20 @@ def main() -> int:
             BokehInferenceError,
             ImageInputError,
             OSError,
+            ValueError,
+        ) as exc:
+            print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
+            return 2
+    if args.command == "pipeline":
+        try:
+            return _run_pipeline(args)
+        except (
+            BokehInferenceError,
+            DepthInferenceError,
+            ImageInputError,
+            M9InferenceError,
+            OSError,
+            ProcessingError,
             ValueError,
         ) as exc:
             print(json.dumps({"error": str(exc)}, ensure_ascii=False), file=sys.stderr)
