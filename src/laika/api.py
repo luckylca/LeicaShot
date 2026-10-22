@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -44,6 +46,7 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024
 MAX_OPTIONS_JSON_BYTES = 16 * 1024
 MULTIPART_OVERHEAD_BYTES = 128 * 1024
 TASK_MARKER = ".laika-owned-task"
+UPLOAD_BODY_LIMIT_PATHS = frozenset({"/api/v1/tasks", "/api/v1/compositions"})
 TaskState = Literal[
     "uploading", "queued", "running", "cancelling", "completed", "cancelled", "failed"
 ]
@@ -79,7 +82,8 @@ class UploadBodyLimitMiddleware:
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") != "http" or not (
-            scope.get("method") == "POST" and scope.get("path") == "/api/v1/tasks"
+            scope.get("method") == "POST"
+            and scope.get("path") in UPLOAD_BODY_LIMIT_PATHS
         ):
             await self.app(scope, receive, send)
             return
@@ -137,6 +141,7 @@ class ApiSettings:
     result_ttl_seconds: int = 6 * 60 * 60
     threads: int | None = 1
     default_strategy: Literal["low-memory", "balanced"] = "low-memory"
+    cors_origins: tuple[str, ...] = ()
     m9_model_path: Path | None = None
     depth_model_path: Path | None = None
     bokeh_model_path: Path | None = None
@@ -163,6 +168,19 @@ class ApiSettings:
             raise ValueError("threads must be positive when configured")
         if self.default_strategy not in ("low-memory", "balanced"):
             raise ValueError("default_strategy must be low-memory or balanced")
+        for origin in self.cors_origins:
+            parsed = urlsplit(origin)
+            if (
+                origin == "*"
+                or parsed.scheme not in ("http", "https")
+                or not parsed.netloc
+                or parsed.path
+                or parsed.query
+                or parsed.fragment
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError("CORS origins must be exact HTTP(S) origins")
 
     @property
     def max_pending_tasks(self) -> int:
@@ -186,6 +204,11 @@ class ApiSettings:
         strategy = os.getenv("LAIKA_API_STRATEGY", "low-memory")
         if strategy not in ("low-memory", "balanced"):
             raise ValueError("LAIKA_API_STRATEGY must be low-memory or balanced")
+        cors_origins = tuple(
+            origin.strip()
+            for origin in os.getenv("LAIKA_API_CORS_ORIGINS", "").split(",")
+            if origin.strip()
+        )
         thread_count = integer("LAIKA_API_THREADS", 1)
         return cls(
             storage_dir=Path(
@@ -205,6 +228,7 @@ class ApiSettings:
             result_ttl_seconds=integer("LAIKA_API_RESULT_TTL_SECONDS", 6 * 60 * 60),
             threads=thread_count,
             default_strategy=strategy,  # type: ignore[arg-type]
+            cors_origins=cors_origins,
             m9_model_path=path("LAIKA_M9_MODEL"),
             depth_model_path=path("LAIKA_DEPTH_MODEL"),
             bokeh_model_path=path("LAIKA_BOKEH_MODEL"),
@@ -314,6 +338,7 @@ class TaskManager:
         )
         self._lock = threading.RLock()
         self._tasks: dict[str, TaskRecord] = {}
+        self._composition_reservations: dict[str, Path] = {}
         self._closed = False
         self._thread_local = threading.local()
         self._resident_engines: list[Any] = []
@@ -331,7 +356,7 @@ class TaskManager:
             self._expire_old_tasks()
             pending = sum(
                 task.status not in TERMINAL_STATES for task in self._tasks.values()
-            )
+            ) + len(self._composition_reservations)
             if self._closed:
                 raise RuntimeError("task service is shutting down")
             if pending >= self.settings.max_pending_tasks:
@@ -347,6 +372,11 @@ class TaskManager:
                     continue
                 active_bytes = self._directory_size_bytes(active_task.directory)
                 active_reservations += max(0, reservation_bytes - active_bytes)
+            for directory in self._composition_reservations.values():
+                active_bytes = self._directory_size_bytes(directory)
+                active_reservations += max(
+                    0, self.settings.max_upload_bytes - active_bytes
+                )
             if (
                 self._storage_size_bytes() + active_reservations + reservation_bytes
                 > self.settings.max_storage_bytes
@@ -369,6 +399,101 @@ class TaskManager:
             )
             self._tasks[task_id] = record
             return record, token
+
+    def reserve_composition(self) -> tuple[str, Path]:
+        """Reserve one bounded queue slot and upload budget for GAIC scoring."""
+        with self._lock:
+            self._expire_old_tasks()
+            pending = sum(
+                task.status not in TERMINAL_STATES for task in self._tasks.values()
+            ) + len(self._composition_reservations)
+            if self._closed:
+                raise RuntimeError("task service is shutting down")
+            if pending >= self.settings.max_pending_tasks:
+                raise QueueFullError("processing queue is full")
+            active_reservations = 0
+            for task in self._tasks.values():
+                if task.status not in TERMINAL_STATES:
+                    actual = self._directory_size_bytes(task.directory)
+                    budget = (
+                        self.settings.max_upload_bytes
+                        + self.settings.max_pixels * 4
+                        + 1600 * 1600 * 4
+                    )
+                    active_reservations += max(0, budget - actual)
+            for directory in self._composition_reservations.values():
+                actual = self._directory_size_bytes(directory)
+                active_reservations += max(0, self.settings.max_upload_bytes - actual)
+            if (
+                self._storage_size_bytes()
+                + active_reservations
+                + self.settings.max_upload_bytes
+                > self.settings.max_storage_bytes
+            ):
+                raise StorageLimitError("task storage is full; retry after cleanup")
+            reservation_id = str(uuid.uuid4())
+            directory = self.settings.storage_dir / f"composition-{reservation_id}"
+            directory.mkdir(mode=0o700)
+            (directory / TASK_MARKER).write_text("leicashot temporary task data\n")
+            self._composition_reservations[reservation_id] = directory
+            return reservation_id, directory
+
+    def submit_composition(
+        self,
+        reservation_id: str,
+        *,
+        strategy: Literal["low-memory", "balanced"],
+        target_long_edge: int | None,
+    ) -> Future[Any]:
+        with self._lock:
+            directory = self._composition_reservations.get(reservation_id)
+            if directory is None:
+                raise RuntimeError("composition reservation is no longer active")
+            try:
+                return self._executor.submit(
+                    self._run_composition,
+                    reservation_id,
+                    directory / "source.upload",
+                    strategy,
+                    target_long_edge,
+                )
+            except RuntimeError:
+                self.release_composition(reservation_id)
+                raise
+
+    def release_composition(self, reservation_id: str) -> None:
+        with self._lock:
+            directory = self._composition_reservations.pop(reservation_id, None)
+            if directory is not None:
+                shutil.rmtree(directory, ignore_errors=True)
+
+    def _run_composition(
+        self,
+        reservation_id: str,
+        input_path: Path,
+        strategy: Literal["low-memory", "balanced"],
+        target_long_edge: int | None,
+    ) -> dict[str, Any]:
+        engine: Any | None = None
+        owned = False
+        with self._lock:
+            directory = self._composition_reservations.get(reservation_id)
+        if directory is None:
+            raise RuntimeError("composition reservation is no longer active")
+        try:
+            engine, owned = self._engine_for(strategy, directory)
+            result = engine.suggest_composition(
+                input_path,
+                target_long_edge=target_long_edge,
+            )
+            return result.as_dict()
+        finally:
+            if owned and engine is not None:
+                try:
+                    engine.close()
+                except Exception:
+                    logger.exception("Could not close GAIC composition engine")
+            self.release_composition(reservation_id)
 
     def abort_upload(self, task_id: str) -> None:
         with self._lock:
@@ -559,10 +684,12 @@ class TaskManager:
                     )
 
     def _acquire_engine(self, record: TaskRecord) -> tuple[Any, bool]:
-        strategy = record.options.strategy
+        return self._engine_for(record.options.strategy, record.directory)
+
+    def _engine_for(self, strategy: str, temp_root: Path) -> tuple[Any, bool]:
         if strategy == "low-memory":
             return self._engine_factory(
-                **self.settings.engine_kwargs(strategy, record.directory)
+                **self.settings.engine_kwargs(strategy, temp_root)
             ), True
         engines = getattr(self._thread_local, "engines", None)
         if engines is None:
@@ -713,6 +840,23 @@ def _validate_uploaded_image(path: Path, settings: ApiSettings) -> str:
     return image_format
 
 
+async def _store_uploaded_image(
+    file: UploadFile,
+    destination_path: Path,
+    settings: ApiSettings,
+) -> str:
+    total = 0
+    with destination_path.open("xb") as destination:
+        while chunk := await file.read(UPLOAD_CHUNK_BYTES):
+            total += len(chunk)
+            if total > settings.max_upload_bytes:
+                raise ImageLimitError("input file exceeds the configured byte limit")
+            destination.write(chunk)
+    if total == 0:
+        raise ApiUploadError("uploaded image is empty")
+    return _validate_uploaded_image(destination_path, settings)
+
+
 def _parse_options(raw: str, settings: ApiSettings) -> ProcessingOptions:
     if len(raw.encode("utf-8")) > MAX_OPTIONS_JSON_BYTES:
         raise ValueError("processing options are too large")
@@ -755,6 +899,14 @@ def create_app(
         UploadBodyLimitMiddleware,
         max_bytes=selected_settings.max_upload_bytes + MULTIPART_OVERHEAD_BYTES,
     )
+    if selected_settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(selected_settings.cors_origins),
+            allow_methods=["GET", "POST"],
+            allow_headers=["Content-Type", "X-Laika-Task-Token"],
+            allow_credentials=False,
+        )
     app.state.task_manager = manager
 
     @app.get("/api/v1/health")
@@ -762,7 +914,7 @@ def create_app(
         with manager._lock:
             pending = sum(
                 task.status not in TERMINAL_STATES for task in manager._tasks.values()
-            )
+            ) + len(manager._composition_reservations)
         return {
             "status": "ok",
             "active_or_queued_tasks": pending,
@@ -824,6 +976,52 @@ def create_app(
                 "cancel_url": f"/api/v1/tasks/{enqueued.task_id}/cancel",
             }
         finally:
+            await file.close()
+
+    @app.post("/api/v1/compositions")
+    async def suggest_compositions(
+        file: Annotated[UploadFile, File()],
+        strategy: Annotated[Literal["low-memory", "balanced"], Form()] = "low-memory",
+        target_long_edge: Annotated[int | None, Form(ge=1, le=8192)] = None,
+    ) -> dict[str, Any]:
+        reservation_id: str | None = None
+        submitted = False
+        try:
+            try:
+                reservation_id, directory = manager.reserve_composition()
+            except QueueFullError as exc:
+                raise HTTPException(status_code=429, detail=str(exc)) from exc
+            except StorageLimitError as exc:
+                raise HTTPException(status_code=507, detail=str(exc)) from exc
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=503, detail="task service is unavailable"
+                ) from exc
+
+            try:
+                await _store_uploaded_image(
+                    file, directory / "source.upload", selected_settings
+                )
+            except ImageLimitError as exc:
+                raise HTTPException(status_code=413, detail=str(exc)) from exc
+            except ApiUploadError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+            future = manager.submit_composition(
+                reservation_id,
+                strategy=strategy,
+                target_long_edge=target_long_edge,
+            )
+            submitted = True
+            try:
+                return await asyncio.shield(asyncio.wrap_future(future))
+            except ProcessingError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        finally:
+            if reservation_id is not None and not submitted:
+                manager.release_composition(reservation_id)
             await file.close()
 
     @app.get("/api/v1/tasks/{task_id}")

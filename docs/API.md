@@ -20,8 +20,14 @@ schema is available at `/api/v1/openapi.json` and `/docs`.
 
 Optional model paths are `LAIKA_SAM_MODEL_DIR`, `LAIKA_VITMATTE_MODEL`, and
 `LAIKA_GAIC_MODEL`. Subject points require both SAM and ViTMatte assets. A crop
-can be supplied in the task options after selecting it through the SDK or CLI;
-the HTTP composition-suggestion endpoint is still pending.
+can be supplied in task options after selecting it through the SDK, CLI, or the
+GAIC suggestion route.
+
+For a separately hosted browser client, set `LAIKA_API_CORS_ORIGINS` to a
+comma-separated list of exact origins, without URL paths or trailing slashes,
+for example `https://editor.example`. CORS is disabled by default; the local
+Vite proxy keeps development requests same-origin. This setting does not provide
+user authentication.
 
 ## Limits and lifecycle
 
@@ -33,7 +39,7 @@ the HTTP composition-suggestion endpoint is still pending.
 | `LAIKA_API_MAX_NETWORK_PIXELS` | 4,000,000 | Model tensor budget forwarded to the engine |
 | `LAIKA_API_MAX_WORKERS` | 1 | Simultaneous processing tasks |
 | `LAIKA_API_QUEUE_CAPACITY` | 1 | Additional waiting tasks |
-| `LAIKA_API_MAX_STORAGE_BYTES` | 10 GiB | Disk reservation limit for retained tasks and a worst-case new result |
+| `LAIKA_API_MAX_STORAGE_BYTES` | 10 GiB | Admission budget for retained tasks, active task working sets, and composition uploads |
 | `LAIKA_API_RESULT_TTL_SECONDS` | 21,600 | Completed task retention before cleanup |
 | `LAIKA_API_STRATEGY` | `low-memory` | Default `low-memory` or `balanced` worker strategy |
 | `LAIKA_API_THREADS` | 1 | ONNX Runtime intra-op thread count |
@@ -55,8 +61,11 @@ metadata are in memory and are not restored after restart.
 Storage admission accounts for the upload and a conservative per-task working
 set for every active reservation, so simultaneous uploads cannot each consume
 the same remaining disk budget. Real task temporary files also count toward the
-workspace limit. This protects the configured workspace budget; it does not
-replace an OS/container disk quota.
+workspace limit. This is an admission guard, not a hard OS/container disk quota.
+Composition suggestions use the same worker pool, queue limit, upload-byte
+limit, storage budget, and Low Memory/Balanced engine policy as image tasks.
+The route returns ranked crop coordinates synchronously and deletes the upload
+after scoring.
 
 ## Create and follow a task
 
@@ -71,6 +80,11 @@ curl -X POST http://127.0.0.1:8000/api/v1/tasks \
 
 The response is `202 Accepted` and contains the task ID, one-time token, and
 status/cancel URLs. Poll the status endpoint with the token:
+
+`POST /api/v1/compositions` accepts a multipart `file`, optional `strategy`
+(`low-memory` by default), and optional `target_long_edge` (1–8192). It requires
+`LAIKA_GAIC_MODEL` and returns source dimensions, candidate count, runtime
+metadata, and ranked normalized crop boxes.
 
 ```bash
 curl http://127.0.0.1:8000/api/v1/tasks/TASK_ID \
@@ -102,5 +116,11 @@ The first real CPU-only HTTP run processed a 1080×1620 portrait through M9,
 Depth, ARNet, and an explicit crop in one task. It returned a 918×1224 PNG in
 90.604 seconds with a sampled 698,236,928-byte server process-tree RSS peak.
 See the [full benchmark report](benchmarks/api-task-real-photo-2026-10-22.md)
-for hardware, stage timing, model hashes, and measurement limits. The API
-composition-suggestion route and Web editor remain in progress.
+for hardware, stage timing, model hashes, and measurement limits. The real GAIC
+route scored 86 candidates in 1.403 seconds at a sampled 416,251,904-byte
+server process-tree RSS peak; details are in the
+[composition benchmark](benchmarks/api-composition-real-photo-2026-10-22.md).
+The Web editor was exercised in a browser against this API: a real image was
+uploaded, GAIC suggestions were selected, a M9+Depth+ARNet task completed, the
+preview rendered, and the full PNG downloaded. Web interaction and build checks
+are included in CI.
