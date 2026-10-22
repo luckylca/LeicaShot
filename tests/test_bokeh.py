@@ -140,6 +140,65 @@ def test_bokeh_adapter_accepts_float_rgb_without_changing_values(
     np.testing.assert_allclose(prediction.rgb_nchw[0, 2], 0.85, atol=1e-7)
 
 
+def test_low_memory_arnet_tiles_even_images_and_matches_full_fake_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    rng = np.random.default_rng(42)
+    rgb = rng.random((130, 150, 3), dtype=np.float32) * np.float32(0.7)
+    defocus = rng.uniform(-1.0, 1.0, size=(130, 150)).astype(np.float32)
+    full_engine = BokehMeARNet(
+        model,
+        strategy="balanced",
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+    )
+    tiled_session = FakeSession()
+    tiled_engine = BokehMeARNet(
+        model,
+        strategy="low-memory",
+        inference_tile_edge=64,
+        full_inference_pixel_limit=100,
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: tiled_session,
+    )
+
+    full = full_engine.infer(rgb, defocus)
+    tiled = tiled_engine.infer(rgb, defocus)
+
+    np.testing.assert_array_equal(tiled.rgb_nchw, full.rgb_nchw)
+    assert not full.tiled
+    assert tiled.tiled
+    assert tiled.tile_count == 9
+    assert len(tiled_session.calls) == tiled.tile_count
+    assert tiled_engine.runtime_info.inference_tile_edge == 64
+
+
+def test_low_memory_arnet_keeps_odd_dimensions_on_validated_full_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    session = FakeSession()
+    engine = BokehMeARNet(
+        model,
+        strategy="low-memory",
+        inference_tile_edge=64,
+        full_inference_pixel_limit=1,
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: session,
+    )
+    rgb = np.zeros((130, 151, 3), dtype=np.float32)
+    defocus = np.zeros((130, 151), dtype=np.float32)
+
+    prediction = engine.infer(rgb, defocus)
+
+    assert not prediction.tiled
+    assert prediction.tile_count == 1
+    assert len(session.calls) == 1
+
+
 def test_depth_normalization_and_point_focus_match_reference_percentiles() -> None:
     rows = np.linspace(0.0, 99.0, 100, dtype=np.float32)[:, None]
     raw = np.broadcast_to(rows, (100, 100)).copy()

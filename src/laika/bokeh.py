@@ -22,6 +22,9 @@ BOKEH_REFERENCE_ONNX_SHA256 = (
 BOKEH_INPUTS = ("image", "defocus")
 BOKEH_OUTPUT = "output"
 BOKEH_STRATEGIES = ("low-memory", "balanced")
+BOKEH_TILE_EDGE = 512
+BOKEH_TILE_HALO = 16
+BOKEH_FULL_INFERENCE_PIXEL_LIMIT = 4_000_000
 
 
 class BokehInferenceError(RuntimeError):
@@ -37,6 +40,8 @@ class BokehPrediction:
     height: int
     preprocess_seconds: float
     inference_seconds: float
+    tiled: bool = False
+    tile_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -48,6 +53,8 @@ class BokehRuntimeInfo:
     provider: str
     strategy: str
     intra_op_num_threads: int
+    inference_tile_edge: int
+    full_inference_pixel_limit: int
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -112,6 +119,8 @@ class BokehMeARNet:
         *,
         strategy: Literal["low-memory", "balanced"] = "low-memory",
         intra_op_num_threads: int | None = None,
+        inference_tile_edge: int = BOKEH_TILE_EDGE,
+        full_inference_pixel_limit: int = BOKEH_FULL_INFERENCE_PIXEL_LIMIT,
         expected_sha256: str | None = None,
         session_factory: Any | None = None,
     ) -> None:
@@ -123,10 +132,16 @@ class BokehMeARNet:
             )
         if intra_op_num_threads < 1:
             raise ValueError("intra_op_num_threads must be positive")
+        if inference_tile_edge < 64 or inference_tile_edge % 2:
+            raise ValueError("inference_tile_edge must be an even value of at least 64")
+        if full_inference_pixel_limit < 1:
+            raise ValueError("full_inference_pixel_limit must be positive")
 
         self.model_path = Path(model_path)
         self.strategy = strategy
         self.intra_op_num_threads = intra_op_num_threads
+        self.inference_tile_edge = inference_tile_edge
+        self.full_inference_pixel_limit = full_inference_pixel_limit
         self._session: Any | None = None
         if not self.model_path.is_file():
             raise BokehInferenceError(
@@ -208,6 +223,8 @@ class BokehMeARNet:
             provider=self.provider,
             strategy=self.strategy,
             intra_op_num_threads=self.intra_op_num_threads,
+            inference_tile_edge=self.inference_tile_edge,
+            full_inference_pixel_limit=self.full_inference_pixel_limit,
         )
 
     def infer(self, rgb: Any, defocus: Any) -> BokehPrediction:
@@ -243,6 +260,21 @@ class BokehMeARNet:
             _range_check(image, 0.0, 1.0, "rgb")
         _range_check(defocus_map, -1.0, 1.0, "defocus")
 
+        should_tile = (
+            self.strategy == "low-memory"
+            and height * width > self.full_inference_pixel_limit
+            and height % 2 == 0
+            and width % 2 == 0
+        )
+        if should_tile:
+            return self._infer_tiled(image, defocus_map)
+        return self._infer_one(image, defocus_map)
+
+    def _infer_one(self, image: Any, defocus_map: Any) -> BokehPrediction:
+        """Run one native ARNet graph invocation on the supplied image region."""
+        import numpy as np
+
+        height, width = image.shape[:2]
         started = time.perf_counter()
         tensor = np.empty((1, 3, height, width), dtype=np.float32)
         for channel in range(3):
@@ -273,6 +305,60 @@ class BokehMeARNet:
             height=height,
             preprocess_seconds=preprocess_seconds,
             inference_seconds=inference_seconds,
+        )
+
+    def _infer_tiled(self, image: Any, defocus_map: Any) -> BokehPrediction:
+        """Run exact convolutional tiles with full receptive-field overlap.
+
+        The pinned ARNet applies an even-aligned 2×2 space-to-depth transform,
+        then eight 3×3 convolutions at half resolution. A 16-pixel halo on
+        every side therefore covers the complete input-space receptive radius.
+        Tile origins and extents remain even so each space-to-depth phase is
+        identical to the full-frame graph. Only the core region is copied into
+        the output tensor.
+        """
+        import numpy as np
+
+        height, width = image.shape[:2]
+        output = np.empty((1, 3, height, width), dtype=np.float32)
+        tile_count = 0
+        preprocess_seconds = 0.0
+        inference_seconds = 0.0
+        edge = self.inference_tile_edge
+        halo = BOKEH_TILE_HALO
+
+        for core_y0 in range(0, height, edge):
+            core_y1 = min(height, core_y0 + edge)
+            tile_y0 = max(0, core_y0 - halo)
+            tile_y1 = min(height, core_y1 + halo)
+            for core_x0 in range(0, width, edge):
+                core_x1 = min(width, core_x0 + edge)
+                tile_x0 = max(0, core_x0 - halo)
+                tile_x1 = min(width, core_x1 + halo)
+                prediction = self._infer_one(
+                    image[tile_y0:tile_y1, tile_x0:tile_x1],
+                    defocus_map[tile_y0:tile_y1, tile_x0:tile_x1],
+                )
+                local_y0 = core_y0 - tile_y0
+                local_y1 = local_y0 + core_y1 - core_y0
+                local_x0 = core_x0 - tile_x0
+                local_x1 = local_x0 + core_x1 - core_x0
+                output[0, :, core_y0:core_y1, core_x0:core_x1] = prediction.rgb_nchw[
+                    0, :, local_y0:local_y1, local_x0:local_x1
+                ]
+                preprocess_seconds += prediction.preprocess_seconds
+                inference_seconds += prediction.inference_seconds
+                tile_count += 1
+                del prediction
+
+        return BokehPrediction(
+            rgb_nchw=output,
+            width=width,
+            height=height,
+            preprocess_seconds=preprocess_seconds,
+            inference_seconds=inference_seconds,
+            tiled=True,
+            tile_count=tile_count,
         )
 
     def warmup(self, width: int = 64, height: int = 64) -> float:

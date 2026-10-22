@@ -511,9 +511,20 @@ def _scatter_field_optical(
         if progress_callback is not None:
             progress_callback((level_index + 1) / len(levels))
 
-    output += own * (1.0 - coverage[:, :, None])
+    _combine_own_into_output(output, own, coverage, row_chunk_height)
     _check(cancel_check)
     return output
+
+
+def _combine_own_into_output(
+    output: Any, own: Any, coverage: Any, row_chunk_height: int
+) -> None:
+    """Apply the residual local light without a second full-frame temporary."""
+    height = coverage.shape[0]
+    for y0 in range(0, height, row_chunk_height):
+        y1 = min(height, y0 + row_chunk_height)
+        residual_coverage = 1.0 - coverage[y0:y1]
+        output[y0:y1] += own[y0:y1] * residual_coverage[:, :, None]
 
 
 def scatter_highlights(
@@ -568,10 +579,9 @@ def scatter_highlights(
         ):
             raise ValueError("CoC must be finite and within the reference bound ±54")
 
-    output = np.zeros_like(high)
     levels = _source_levels(depth, radius_scale, cancel_check)
     if not levels:
-        return output
+        return np.zeros_like(high)
     if field_optics:
         return _scatter_field_optical(
             high,
@@ -584,6 +594,7 @@ def scatter_highlights(
             progress_callback,
         )
 
+    output = np.zeros_like(high)
     coverage = np.zeros((height, width), dtype=np.float32)
     own = np.zeros_like(high)
     kernel_cache: dict[int, Any] = {}
@@ -645,7 +656,7 @@ def scatter_highlights(
         if progress_callback is not None:
             progress_callback((level_index + 1) / len(levels))
 
-    output += own * (1.0 - coverage[:, :, None])
+    _combine_own_into_output(output, own, coverage, row_chunk_height)
     _check(cancel_check)
     return output
 
