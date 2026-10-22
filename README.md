@@ -20,7 +20,7 @@ The user confirmed that required model-use authorizations, including M9 and the 
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), the [architecture](docs/ARCHITECTURE.md), the [model guide](docs/MODELS.md), the [engine integration checkpoint](docs/ENGINE_INTEGRATION.md), the [HTTP API guide](docs/API.md), the [Web editor guide](docs/WEB.md), and the [reference study](docs/research/reference-study.md). Python CLI commands include image I/O, depth inference, M9 color, BokehMe ARNet background rendering, coordinated `laika pipeline` processing with an optional selected crop, GAIC `laika composition` suggestions, and model-free `laika crop` application. Model weights and exports remain outside Git.
+See [CONTRIBUTING.md](CONTRIBUTING.md), the [architecture](docs/ARCHITECTURE.md), the [model guide](docs/MODELS.md), the [engine integration checkpoint](docs/ENGINE_INTEGRATION.md), the [HTTP API guide](docs/API.md), the [Web editor guide](docs/WEB.md), the [Docker deployment guide](docs/DEPLOYMENT.md), and the [reference study](docs/research/reference-study.md). Python CLI commands include image I/O, depth inference, M9 color, BokehMe ARNet background rendering, coordinated `laika pipeline` processing with an optional selected crop, GAIC `laika composition` suggestions, and model-free `laika crop` application. Model weights and exports remain outside Git.
 
 ## License status
 

@@ -4,11 +4,11 @@ Updated: 2026-10-22
 
 ## Current checkpoint
 
-- Stable integration branch: `develop`, at merge commit `762ff93` after PR #31.
-- Most recent merged PR: [#31, high-resolution ARNet tiling](https://github.com/luckylca/LeicaShot/pull/31); all seven CI checks passed.
-- Active branch: `perf/highlight-scatter-cpu`, created from the clean PR #31 merge. Current task: skip exact-zero RGB light convolutions while keeping CoC mass/occlusion computation intact.
+- Stable integration branch: `develop`, at merge commit `a503d0b` after PR #32.
+- Most recent merged PR: [#32, skip empty highlight radiance convolutions](https://github.com/luckylca/LeicaShot/pull/32); all seven CI checks passed.
+- Active branch: `feat/docker-deployment`, created from the clean PR #32 merge. API and Web images built on local ARM64 Docker; Compose health checks and API reverse proxy passed. The real-model HTTP smoke is queued behind the active full-resolution Linux baseline to avoid concurrent inference memory pressure.
 - Real M9 output and matching Depth map at 1024×682 produced bitwise-identical ARNet FP32 tensors for one full-frame inference and four 512-pixel tiles; measured 23.74 s and 16.48 s respectively in one CPU trial. This is a local real-model parity case, not a general speed claim.
-- A Linux 5760×3840, 3 GiB cgroup retry without ARNet tiling was OOM-killed during the first full-scale ARNet inference after 222.6 s. The PR #31 tiled implementation completed all ARNet scales. Its pre-optimization 512-row highlight-scatter measurement continues in container `leicashot-fullres-tiled-512-20261022`: at elapsed 4,374.6 s, scatter progress was 0.87736, cgroup peak 2,676,203,520 B, process-tree RSS 2,123,751,424 B, current cgroup use 2,239,565,824 B and OOM counters zero. It has not exported the final PNG. The 128-row attempt was stopped at 1,055.6 s with 2,740,789,248 B cgroup peak and no output.
+- A Linux 5760×3840, 3 GiB cgroup retry without ARNet tiling was OOM-killed during the first full-scale ARNet inference after 222.6 s. The PR #31 tiled implementation completed all ARNet scales. Its pre-optimization 512-row highlight-scatter measurement continues in container `leicashot-fullres-tiled-512-20261022`: at elapsed 5,617.4 s, scatter progress was 0.90954, cgroup peak 2,676,203,520 B, process-tree RSS 2,072,494,080 B, current cgroup use 2,110,709,760 B and OOM counters zero. It has not exported the final PNG. The 128-row attempt was stopped at 1,055.6 s with 2,740,789,248 B cgroup peak and no output.
 - The Web editor supports enabling SAM subject protection, selecting/removing multiple positive points, and choosing ViTMatte tile size. Four Web tests and the production build pass; a live Chrome run completed a real five-model task through full-size download.
 - Python is the only production processing path. Physical Android serial `a4976c80` is reserved for Kotlin reference comparisons; the connected emulator is not used. The user's installed reference app remains untouched.
 - The working GAIC checkpoint and ONNX export are local under `/tmp/laika-models/gaic`; neither is in Git.
@@ -50,14 +50,15 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Active development checkpoint
 
-- PR #31 is merged and all seven CI checks passed. The active PR candidate skips zero-valued RGB light convolutions while preserving exact CoC mass and optical-filter paths.
+- PR #32 is merged and all seven CI checks passed. Its exact-zero radiance optimization preserves CoC mass and optical-filter paths.
 - Linux validation used Lima 2.2.1, Docker CLI 29.9.2 and a rootful Ubuntu ARM64 VM. Models and photos were mounted read-only from local `/tmp` paths and were not uploaded. The reproducible benchmark image builds from tracked `tools/cgroup/Dockerfile`.
 - The cgroup benchmark reports Linux v1/v2 current, peak, limit and event counters alongside process-tree RSS. One 2 GiB guest run completed with only about 8 MiB below the task container's 1.5 GiB limit; system overhead, more images, higher resolutions and concurrency remain unverified.
 - The exact-zero scatter optimization passed 184 local tests and Ruff, matched real-photo float32 scatter output bitwise at 1024×683 and 2048×1365, and preserved the full 2048×1365 pipeline PNG byte-for-byte. Paired 2048 scatter runs were 45.7–49.0% faster. The 5760×3840 Linux baseline task remains active in scatter; the optimized cgroup comparison is pending. See the [scatter report](benchmarks/highlight-scatter-empty-radiance-2026-10-22.md).
+- `feat/docker-deployment` adds hardened API and React/Nginx images, read-only local model mounts, bounded CPU/RAM/concurrency defaults, a named task-data volume, loopback ports, deployment documentation and a Linux Compose build/health CI job. Local ARM64 builds, Compose validation, direct/proxied API health, Web health, static assets, non-root users and read-only roots have passed. Real model-enabled container task validation remains pending.
 
 ## Known gaps and current blocker
 
-- The unified engine coordinates M9, Depth, ARNet with highlights, SAM and ViTMatte. The no-tiling 5760×3840 M9+Depth+ARNet+highlight task was OOM-killed in a 3 GiB cgroup during ARNet's first full-size inference. The tiled implementation completed ARNet and entered highlight scatter; the pre-optimization 512-row task is still running at 87.74% with a 2,676,203,520 B cgroup peak and no OOM events. Its final PNG and output hash are pending; the optimized source-size run and full-resolution subject protection also remain unmeasured.
+- The unified engine coordinates M9, Depth, ARNet with highlights, SAM and ViTMatte. The no-tiling 5760×3840 M9+Depth+ARNet+highlight task was OOM-killed in a 3 GiB cgroup during ARNet's first full-size inference. The tiled implementation completed ARNet and entered highlight scatter; the pre-optimization 512-row task is still running at 90.95% with a 2,676,203,520 B cgroup peak and no OOM events. Its final PNG and output hash are pending; the optimized source-size run and full-resolution subject protection also remain unmeasured.
 - One 2 GiB configured Linux guest completed a constrained 1080×1620 task, but the app cgroup peaked at 99.5% of its 1.5 GiB cap and the run took about 20 minutes. This is not a supported 2 GiB service tier; broader data, cold-start variance and concurrent API tasks require measurement.
 - GAIC suggestions and crop application are implemented through the shared engine and CLI, and `/api/v1/compositions` now routes suggestions through the same bounded API worker pool. `ProcessingOptions.crop` still applies selected crops without rerunning GAIC.
 - PR #26 provides the FastAPI task service; PR #27 adds the React editor and `/api/v1/compositions`, with all seven CI checks passed. The API suggestion route scored 86 candidates in 1.403 s at 416,251,904 B sampled process-tree RSS, and the browser-verified editor flow downloaded a 918×1224 PNG.
@@ -67,4 +68,4 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Next action
 
-Finish the pre-optimization 5760×3840 cgroup task, then repeat it with the validated empty-radiance optimization and compare total time, peak RSS, cgroup counters, dimensions and image output. Merge the current `perf/highlight-scatter-cpu` work only after CI passes, then immediately start the reproducible production Docker/API deployment branch. Continue measuring full-resolution subject protection and broader quality cases.
+Finish the containerized real-photo HTTP task after the active cgroup baseline exits, record container memory/time/output evidence, then commit and merge the active Docker deployment PR after CI passes. Immediately start a clean branch for the optimized 5760×3840 cgroup comparison; compare total time, peak RSS, cgroup counters, dimensions and image output, then continue full-resolution subject protection and broader quality cases.
