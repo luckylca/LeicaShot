@@ -135,6 +135,42 @@ def test_field_optics_preserves_constant_radiance_through_signed_depth_layers() 
     np.testing.assert_allclose(output, high, rtol=0, atol=4e-6)
 
 
+@pytest.mark.parametrize("has_highlight", [False, True])
+def test_field_optics_skips_rgb_filter_only_for_empty_layer_radiance(
+    monkeypatch: pytest.MonkeyPatch, has_highlight: bool
+) -> None:
+    high = np.zeros((9, 11, 3), dtype=np.float32)
+    if has_highlight:
+        high[4, 5] = (0.8, 0.5, 0.2)
+    else:
+        high.fill(np.float32(-0.0))
+    coc = np.zeros((9, 11), dtype=np.float32)
+    original_filter = highlights.cv2.filter2D
+    filtered_dimensions: list[int] = []
+
+    def counted_filter(source, *args, **kwargs):
+        filtered_dimensions.append(source.ndim)
+        return original_filter(source, *args, **kwargs)
+
+    monkeypatch.setattr(highlights.cv2, "filter2D", counted_filter)
+
+    result = scatter_highlights(
+        high,
+        coc,
+        2.8,
+        radius_scale=1.0,
+        field_optics=True,
+        row_chunk_height=4,
+    )
+
+    assert (3 in filtered_dimensions) is has_highlight
+    assert np.isfinite(result).all()
+    if has_highlight:
+        assert float(result.sum()) > 0.0
+    else:
+        assert not np.any(result)
+
+
 @pytest.mark.parametrize("row_chunk_height", [1, 7, 64])
 def test_chunked_residual_scatter_combination_is_bitwise_legacy_exact(
     row_chunk_height: int,
