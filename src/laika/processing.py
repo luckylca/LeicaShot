@@ -17,6 +17,7 @@ from PIL import Image
 from laika.bokeh import (
     APERTURES,
     BokehMeARNet,
+    BokehTileProgress,
     focus_at_point,
     normalize_depth_map,
     render_bokeh,
@@ -104,6 +105,7 @@ class ProcessingProgress:
     stage: str
     fraction: float
     elapsed_seconds: float
+    details: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -471,7 +473,9 @@ class LaikaProcessingEngine:
             if cancel_event is not None and cancel_event.is_set():
                 raise ProcessingCancelled("image processing was cancelled")
 
-        def notify(stage: str, fraction: float) -> None:
+        def notify(
+            stage: str, fraction: float, details: dict[str, Any] | None = None
+        ) -> None:
             if stage != "complete":
                 check_cancelled()
             if progress_callback is not None:
@@ -480,6 +484,7 @@ class LaikaProcessingEngine:
                         stage=stage,
                         fraction=fraction,
                         elapsed_seconds=time.perf_counter() - started,
+                        details=details,
                     )
                 )
             if stage != "complete":
@@ -692,6 +697,36 @@ class LaikaProcessingEngine:
                 def on_bokeh_pass(index: int, total: int, _scale: float) -> None:
                     notify("bokeh", 0.69 + 0.12 * index / max(total, 1))
 
+                def on_bokeh_tile(
+                    pass_index: int, pass_total: int, tile: BokehTileProgress
+                ) -> None:
+                    completed_tiles = (
+                        tile.index - 1 if tile.phase == "started" else tile.index
+                    )
+                    tile_fraction = completed_tiles / max(tile.count, 1)
+                    pass_fraction = (pass_index - 1 + tile_fraction) / max(
+                        pass_total, 1
+                    )
+                    notify(
+                        "bokeh",
+                        max(0.68 + 0.01, 0.69 + 0.12 * pass_fraction),
+                        details={
+                            "component": "arnet_tile",
+                            "phase": tile.phase,
+                            "pass_index": pass_index,
+                            "pass_count": pass_total,
+                            "tile_index": tile.index,
+                            "tile_count": tile.count,
+                            "frame_size": [tile.frame_width, tile.frame_height],
+                            "tile_bounds": [
+                                tile.x,
+                                tile.y,
+                                tile.x + tile.width,
+                                tile.y + tile.height,
+                            ],
+                        },
+                    )
+
                 def on_bokeh_stage(stage: str, fraction: float) -> None:
                     if stage == "highlight-extraction":
                         progress = 0.68 + 0.01 * fraction
@@ -716,6 +751,11 @@ class LaikaProcessingEngine:
                         row_chunk_height=options.bokeh_row_chunk_height,
                         cancel_check=check_cancelled,
                         pass_callback=on_bokeh_pass,
+                        tile_progress_callback=(
+                            on_bokeh_tile
+                            if progress_callback is not None or cancel_event is not None
+                            else None
+                        ),
                         stage_callback=on_bokeh_stage,
                     )
                 finally:
