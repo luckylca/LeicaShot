@@ -81,6 +81,24 @@ foreground/background; remaining differences are concentrated around uncertain
 boundaries and compression artifacts. These scores apply to this one image and
 selection. They do not establish hair quality over a broad image set.
 
+All three supported tile sizes were then measured sequentially on the same
+portrait, with the same three points, M9/SAM/ViTMatte models, CPU thread count,
+and optional JPEG ground truth. These helper runs include M9, SAM, and ViTMatte
+but omit Depth and ARNet; their RSS and task times should not be read as the
+complete five-model pipeline measurements above.
+
+| ViTMatte tile | Helper process-tree peak RSS | Helper wall time | ViTMatte inference | Mask IoU | Soft alpha MAE | Boundary precision / recall |
+|---:|---:|---:|---:|---:|---:|---:|
+| 512 | 924,696,576 B | 73.84 s | 59.41 s | 0.987923 | 0.007146 | 0.9059 / 0.8277 |
+| 768 | 923,189,248 B | 89.38 s | 74.96 s | 0.988038 | 0.007197 | 0.9018 / 0.8238 |
+| 1024 | 1,095,548,928 B | 144.55 s | 115.86 s | 0.987928 | 0.007184 | 0.8939 / 0.8251 |
+
+On this image, the 768 tile changes IoU by only `+0.000115` over 512 while
+taking 15.5 s longer with essentially the same sampled peak RSS. The 1024 tile
+is 171 MB higher and 70.7 s slower than 512 with no material mask-quality
+change. The measured default remains 512 for this workload. This is one-photo
+evidence; broader portraits and fine-object scenes still need checks.
+
 ### Python and Kotlin final-composite comparison
 
 To isolate final compositing, the M9 RGB image, no-subject ARNet background, and
@@ -140,8 +158,9 @@ not replace the unified full-pipeline benchmark above.
 - Only the 1080×1620 photo has a full five-model subject-protection run. Measure
   2048-pixel and original-resolution large photos, and test hair, thin objects,
   multiple subjects, and holes/background gaps.
-- Compare 512/768/1024 tile sizes on the same photos; 512 was selected here for
-  memory behavior, not declared a universal optimum.
+- The 512/768/1024 tile sweep is complete for this one portrait; repeat it on
+  more hair, fine-object, and background-gap photos before generalizing the
+  measured quality/speed tradeoff.
 - Measure the full highlighted pipeline with subject protection under Linux
   cgroup 8/4/2 GiB limits. The current result is neither a 4 GiB nor a 2 GiB
   pass.

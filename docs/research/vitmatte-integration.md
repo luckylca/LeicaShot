@@ -78,6 +78,7 @@ is why the engine accepts repeated points and reuses one SAM image embedding.
 The three-point M9 + Depth + ARNet + SAM + ViTMatte request peaked at
 `788,070,400` bytes process-tree RSS and took `112.73 s` on the 8 GiB MacBook
 Air M1. This is not a Linux cgroup run or a 4/2 GiB acceptance result. More
-photos, 768/1024 tile comparison, full-resolution tests and constrained Linux
-measurements remain open. See the integration report for the exact local model
-hashes, timings and reproducible command.
+more photos, full-resolution tests and constrained Linux measurements remain
+open. A same-photo 512/768/1024 tile sweep slightly favored 512 on runtime and
+memory with essentially unchanged mask quality; see the integration report for
+the exact local model hashes, timings and reproducible commands.
