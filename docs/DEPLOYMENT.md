@@ -75,6 +75,8 @@ network-level authentication. For a separately hosted browser client, set
 
 GitHub Actions builds both images, validates the Compose file, starts the
 containers without model assets, and checks the API and Web health endpoints.
-This verifies packaging and service startup; a model-enabled real-photo request
-is still required for inference validation. The ongoing performance and
-low-memory reports are linked from [project status](PROJECT_STATUS.md).
+A separate local ARM64 Linux run mounted the real authorized model files and
+completed M9 + Depth + ARNet + highlights through one HTTP request; timing,
+cgroup peak, hashes and direct SDK parity are in the [Docker API benchmark](benchmarks/docker-api-real-photo-2026-10-22.md).
+That preview-size smoke does not certify native-resolution resource targets.
+See [project status](PROJECT_STATUS.md) for current low-memory results.
