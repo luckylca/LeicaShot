@@ -13,6 +13,7 @@ from PIL import Image
 
 from laika.api import (
     ApiSettings,
+    QueueFullError,
     StorageLimitError,
     TaskManager,
     TaskOptions,
@@ -33,6 +34,7 @@ class FakeEngine:
         self.kwargs = kwargs
         self.closed = False
         self.options: Any | None = None
+        self.suggest_target_long_edge: int | None = None
 
     def process_file(
         self,
@@ -69,6 +71,36 @@ class FakeEngine:
                 "height": height,
                 "output_bytes": destination.stat().st_size,
                 "models": {},
+            }
+        )
+
+    def suggest_composition(
+        self,
+        source: Path,
+        *,
+        target_long_edge: int | None,
+    ) -> Any:
+        assert source.is_file()
+        self.suggest_target_long_edge = target_long_edge
+        return SimpleNamespace(
+            as_dict=lambda: {
+                "width": 32,
+                "height": 20,
+                "analysis_width": 32,
+                "analysis_height": 20,
+                "candidate_count": 1,
+                "suggestions": [
+                    {
+                        "crop": {
+                            "left": 0.1,
+                            "top": 0.1,
+                            "right": 0.9,
+                            "bottom": 0.9,
+                        },
+                        "score": 0.8,
+                        "improvement_over_original": 0.1,
+                    }
+                ],
             }
         )
 
@@ -266,6 +298,139 @@ def test_api_disk_budget_accounts_for_unfilled_active_task_reservations(
             raise AssertionError("active task storage reservations were overcommitted")
     finally:
         manager.close()
+
+
+def test_api_composition_upload_returns_ranked_crop_and_cleans_temp_data(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / "tasks"
+    engines: list[FakeEngine] = []
+
+    def make_engine(**kwargs: Any) -> FakeEngine:
+        engine = FakeEngine(**kwargs)
+        engines.append(engine)
+        return engine
+
+    app = create_app(_settings(storage), engine_factory=make_engine)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/compositions",
+            files={"file": ("portrait.png", _png_bytes(), "image/png")},
+            data={"strategy": "low-memory", "target_long_edge": "1200"},
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["candidate_count"] == 1
+        assert result["suggestions"][0]["crop"] == {
+            "left": 0.1,
+            "top": 0.1,
+            "right": 0.9,
+            "bottom": 0.9,
+        }
+        assert engines[0].suggest_target_long_edge == 1200
+        assert engines[0].closed
+        assert client.get("/api/v1/health").json()["active_or_queued_tasks"] == 0
+
+    assert list(storage.iterdir()) == []
+
+
+def test_api_composition_shares_the_bounded_processing_queue(tmp_path: Path) -> None:
+    settings = _settings(
+        tmp_path / "tasks",
+        max_workers=1,
+        queue_capacity=0,
+    )
+    manager = TaskManager(settings, engine_factory=FakeEngine)
+    reservation_id, _directory = manager.reserve_composition()
+    options = TaskOptions(mode="color").to_processing_options(settings)
+
+    try:
+        try:
+            manager.reserve(options)
+        except QueueFullError:
+            pass
+        else:
+            raise AssertionError("composition and render exceeded shared queue limit")
+    finally:
+        manager.release_composition(reservation_id)
+        manager.close()
+
+
+def test_api_applies_total_body_limit_to_composition_uploads(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(tmp_path / "tasks", max_upload_bytes=4096),
+        engine_factory=FakeEngine,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/compositions",
+            content=b"x" * 200_000,
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    assert response.status_code == 413
+
+
+def test_api_configures_exact_cross_origin_web_clients(tmp_path: Path) -> None:
+    app = create_app(
+        _settings(
+            tmp_path / "tasks",
+            cors_origins=("https://editor.example",),
+        ),
+        engine_factory=FakeEngine,
+    )
+
+    with TestClient(app) as client:
+        preflight = client.options(
+            "/api/v1/tasks/task-1/cancel",
+            headers={
+                "Origin": "https://editor.example",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "x-laika-task-token",
+            },
+        )
+        assert preflight.status_code == 200
+        assert (
+            preflight.headers["access-control-allow-origin"] == "https://editor.example"
+        )
+        assert (
+            "x-laika-task-token"
+            in preflight.headers["access-control-allow-headers"].lower()
+        )
+
+        health = client.get(
+            "/api/v1/health",
+            headers={"Origin": "https://editor.example"},
+        )
+        assert health.status_code == 200
+        assert health.headers["access-control-allow-origin"] == "https://editor.example"
+
+        denied = client.get(
+            "/api/v1/health",
+            headers={"Origin": "https://other.example"},
+        )
+        assert "access-control-allow-origin" not in denied.headers
+
+
+def test_api_rejects_wildcard_cors_origin(tmp_path: Path) -> None:
+    try:
+        _settings(tmp_path / "tasks", cors_origins=("*",))
+    except ValueError as exc:
+        assert "exact HTTP(S) origins" in str(exc)
+    else:
+        raise AssertionError("wildcard CORS origins must be rejected")
+
+
+def test_api_rejects_non_origin_cors_urls(tmp_path: Path) -> None:
+    for invalid in ("https://editor.example/", "https://editor.example/path"):
+        try:
+            _settings(tmp_path / "tasks", cors_origins=(invalid,))
+        except ValueError as exc:
+            assert "exact HTTP(S) origins" in str(exc)
+        else:
+            raise AssertionError(f"CORS URL with a path must be rejected: {invalid}")
 
 
 def test_api_bounds_active_tasks_and_cancels_running_work(tmp_path: Path) -> None:

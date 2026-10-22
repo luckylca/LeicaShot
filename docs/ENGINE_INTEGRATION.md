@@ -65,16 +65,17 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - `apply_crop_file()` remains a model-free path for an existing image, preserves ICC metadata, and avoids rerunning M9, depth, ARNet, SAM, or ViTMatte when the caller already has a rendered result.
 - `laika composition`, `laika crop`, and `laika pipeline --crop LEFT,TOP,RIGHT,BOTTOM` call these same SDK operations. Crops use the EXIF-oriented pixel rectangle and do not upscale.
 - Across three fresh Low Memory workers on a 1080×1620 P3M-10K image, GAIC scored 556 proposals in a median 1.016 s with 353,615,872 B median process-tree RSS (observed range 343,523,328–362,512,384 B). The physical-phone Kotlin run on `a4976c80` used source dimensions for candidate snapping. Same-tensor score values matched exactly; on the actual phone/Python photo decode paths, the top-four crop boxes matched and score improvements differed by at most 0.0131. See [GAIC real-photo benchmark](benchmarks/gaic-real-photo-2026-10-22.md).
-- GAIC suggestions and crop application are available through the shared engine and CLI. FastAPI accepts an explicit selected crop in a task request; a separate HTTP suggestion endpoint and Web crop controls remain pending.
+- GAIC suggestions and crop application are available through the shared engine and CLI. FastAPI accepts explicit selected crops for tasks and exposes `/api/v1/compositions`; the React editor can request suggestions and select a crop before processing.
 
-## FastAPI task service on `feat/fastapi-task-service`
+## FastAPI task service merged in PR #26
 
 - `POST /api/v1/tasks` streams uploads into UUID-owned temporary folders, verifies the actual decoded JPEG/PNG/WebP format, rejects animation and enforces byte/pixel limits before queueing the shared `LaikaProcessingEngine`.
 - The bounded worker queue supports Low Memory per-task engines and Balanced thread-local engine reuse. Task tokens authorize status, cancellation, source, preview, and download routes; only token digests are stored. Failed and cancelled files are removed, completed tasks expire by TTL, and owned directories are cleaned at service shutdown.
 - `/api/v1/tasks/{id}` exposes task stage and progress. Preview and full PNG download routes are available. An explicitly selected normalized crop is passed into the shared engine and does not invoke GAIC again.
 - Local end-to-end API benchmark uploaded one 1080×1620 P3M portrait and ran M9, Depth, ARNet and crop in the same task. It returned a 918×1224 PNG, sampled 698,236,928 B server process-tree peak RSS, and took 90.604 s task wall time on an 8 GiB MacBook Air M1 (CPU-only, one thread). See [API task benchmark](benchmarks/api-task-real-photo-2026-10-22.md). This was not cgroup-limited and had no full-frame Kotlin quality comparison.
 - The API is a thin adapter and does not change SDK/CLI engine behavior. Its queue/status live in process memory; current deployment is a single Uvicorn process. It binds to loopback by default and uses per-task capability tokens, not user accounts.
-- HTTP composition suggestions, Web editing, Linux cgroup measurements and API real-model CI remain to do.
+- `/api/v1/compositions` accepts a validated upload and returns real GAIC crop proposals. It uses the same bounded worker pool, storage admission, and model lifecycle strategy as render tasks. The 1080×1620 CPU test scored 86 candidates in 1.403 s at 416,251,904 B sampled process-tree peak RSS; see [composition API benchmark](benchmarks/api-composition-real-photo-2026-10-22.md).
+- Linux cgroup measurements remain in progress. The Web editor's real upload → GAIC suggestion → combined render → preview → PNG download path passed a Chrome smoke run; `docs/WEB.md` records the downloaded output hash and dimensions. Cross-origin access is opt-in through exact `LAIKA_API_CORS_ORIGINS` origins.
 
 ## Current integration limits
 
@@ -104,7 +105,8 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [x] Route composition suggestions and model-free crop application through the shared Python engine and CLI.
 - [x] Run 556-candidate GAIC scoring on a real photo; compare same-tensor results and both image-preprocessing paths with Kotlin on the physical ADB phone, with no emulator use.
 - [x] Apply an explicitly selected GAIC crop after any processing mode through `ProcessingOptions`; suggestions remain an explicit separate model call.
-- [ ] Add GAIC suggestion and crop selection to the versioned API/Web editing flow.
+- [x] Add a bounded GAIC suggestion route at `/api/v1/compositions` and connect selected crop support to render tasks.
+- [x] Complete Web upload, mode/focus/aperture editing, progress/cancel, GAIC crop selection, preview comparison, and full PNG download in a browser smoke; Vitest and production build pass locally.
 - [ ] Validate more hair, fine-object and background-gap photos, and measure full-resolution subject protection and Linux cgroup limits.
 - [ ] Six-platform GitHub Actions matrix passes before merge.
 - [ ] Full-resolution highlight run and Linux cgroup memory acceptance remain outstanding.
@@ -114,6 +116,8 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [x] Upload, decoded-format/pixel/byte validation, bounded scheduling, progress, cancellation, token isolation, preview/download, and cleanup tests pass with the shared-engine interface.
 - [x] A single uploaded real photograph completed M9 + LabFusion + Depth + ARNet + explicit crop and returned a downloadable PNG through the HTTP API; measured results are in the [API report](benchmarks/api-task-real-photo-2026-10-22.md).
 - [x] Active upload reservations account for remaining configured workspace budget, with a regression test for concurrent reservation.
-- [x] Local suite: 165 tests; Ruff lint and format checks pass.
-- [ ] Six-platform remote CI for this branch.
-- [ ] Add the GAIC suggestion route; Web editor and Linux cgroup acceptance remain outstanding.
+- [x] Local suite: 171 Python tests; Ruff lint and format checks pass.
+- [x] GAIC suggestions run through the HTTP route with local authorized model; route timing/RSS and model hash are documented.
+- [x] Frontend: two Vitest interaction tests and `npm run build` pass locally.
+- [ ] Six-platform remote Python CI and Node 24 Web CI for `feat/web-editor`.
+- [ ] Linux cgroup acceptance and broader subject-photo quality validation.

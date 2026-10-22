@@ -56,6 +56,13 @@
 - Three cold CLI workers on the M1 at 1400×518 measured median RSS 882,180,096 B for baseline and 453,623,808 B for query chunk 128; both returned a 1400×518 map. Worker wall medians were 8.186 s and 7.733 s, with variable trial times. macOS USS/cgroup data unavailable; these are synthetic single-stage runs, not a full pipeline result.
 - Added opt-in PyTorch comparison and complete image-to-depth measurement to the model smoke workflow. Its first Linux x86_64 run found preprocessing max absolute error `1.58e-4` (above the initial `2e-6` Mac-derived tolerance), while final restored depth max error remained `5.15e-5` (below the unchanged `1e-4` output limit). The validation now uses a `2e-4` cross-platform preprocessing tolerance and records max/mean/p99; the rerun passed. On Linux, one 1400×518 CLI worker sample measured 1,114,427,392 B baseline RSS and 622,305,280 B q128 RSS, with 7.771 s and 7.892 s worker wall time. The runner's cgroup limit was `max`, so this is not a constrained-memory result. See the [M2 benchmark](benchmarks/m2-depth-inference-2026-10-21.md).
 
+## 2026-10-22 — Web editor and GAIC HTTP workflow
+
+- Added `POST /api/v1/compositions`, routed through the shared bounded task pool, image validation, storage admission, Low Memory/Balanced policy, and task cleanup. Added exact-origin opt-in CORS for separately hosted browser clients; wildcard and URL paths are rejected.
+- Added the React + TypeScript editor for photo upload, color/bokeh modes, click focus, aperture, GAIC crop selection, progress/cancel, original/result comparison, and full PNG download. Added Vitest coverage, a Node 24 CI build/test job, API docs, and local startup guidance.
+- Chrome smoke-tested a real P3M portrait from browser upload through GAIC crop suggestion and M9+Depth+ARNet processing to preview and download; output was 918×1224 PNG, 817,062 bytes. Browser smoke details and SHA-256 are in [`WEB.md`](WEB.md). Separate GAIC API measurement: 86 proposals in 1.403 s, sampled server-tree RSS 416,251,904 B.
+- Local checks: 171 Python tests, Ruff lint/format, two Web tests, and Vite production build pass. Remote PR CI is still pending; this work remains on `feat/web-editor` until CI and review.
+
 ## 2026-10-21 — M3 high-resolution depth memory study
 
 - Ran three fresh CPU CLI workers per graph on synthetic 3840×2160 RGB input. Both returned a full-size 2160×3840 float32 depth map (33,177,728 bytes); the pinned resize rule used a 518×924 network raster. A q128 run against the PyTorch reference at this full source size had max depth error `6.91e-5` (limit `1e-4`) and a finite full-size map.
