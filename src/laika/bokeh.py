@@ -35,7 +35,7 @@ class BokehInferenceError(RuntimeError):
 class BokehPrediction:
     """One ARNet pass in RGB NCHW float32, with timings and backend metadata."""
 
-    rgb_nchw: Any
+    rgb_nchw: Any | None
     width: int
     height: int
     preprocess_seconds: float
@@ -229,6 +229,58 @@ class BokehMeARNet:
 
     def infer(self, rgb: Any, defocus: Any) -> BokehPrediction:
         """Run ARNet once and return its owned NCHW output buffer."""
+        image, defocus_map = self._validated_inputs(rgb, defocus)
+        height, width = image.shape[:2]
+        if self.will_tile(width, height):
+            return self._infer_tiled(image, defocus_map)
+        return self._infer_one(image, defocus_map)
+
+    def will_tile(self, width: int, height: int) -> bool:
+        """Return whether this strategy uses the validated even-frame tile path."""
+        return (
+            self.strategy == "low-memory"
+            and width * height > self.full_inference_pixel_limit
+            and height % 2 == 0
+            and width % 2 == 0
+        )
+
+    def infer_into_rgb(self, rgb: Any, defocus: Any, output: Any) -> BokehPrediction:
+        """Infer directly into a same-size HWC float32 destination.
+
+        The tiled path writes each core into the caller-owned output as it is
+        produced. This avoids assembling a second full-resolution NCHW tensor
+        before the renderer converts it to HWC.
+        """
+        import numpy as np
+
+        image, defocus_map = self._validated_inputs(rgb, defocus)
+        height, width = image.shape[:2]
+        destination = np.asarray(output)
+        if (
+            destination.dtype != np.float32
+            or destination.shape != (height, width, 3)
+            or not destination.flags.c_contiguous
+            or not destination.flags.writeable
+        ):
+            raise ValueError(
+                "output must be a writable contiguous H×W×3 float32 RGB array"
+            )
+
+        if self.will_tile(width, height):
+            return self._infer_tiled_into_rgb(image, defocus_map, destination)
+
+        prediction = self._infer_one(image, defocus_map)
+        for channel in range(3):
+            np.copyto(destination[:, :, channel], prediction.rgb_nchw[0, channel])
+        return BokehPrediction(
+            rgb_nchw=None,
+            width=width,
+            height=height,
+            preprocess_seconds=prediction.preprocess_seconds,
+            inference_seconds=prediction.inference_seconds,
+        )
+
+    def _validated_inputs(self, rgb: Any, defocus: Any) -> tuple[Any, Any]:
         try:
             import numpy as np
         except ImportError as exc:  # pragma: no cover - optional runtime
@@ -259,16 +311,7 @@ class BokehMeARNet:
         if image.dtype == np.float32:
             _range_check(image, 0.0, 1.0, "rgb")
         _range_check(defocus_map, -1.0, 1.0, "defocus")
-
-        should_tile = (
-            self.strategy == "low-memory"
-            and height * width > self.full_inference_pixel_limit
-            and height % 2 == 0
-            and width % 2 == 0
-        )
-        if should_tile:
-            return self._infer_tiled(image, defocus_map)
-        return self._infer_one(image, defocus_map)
+        return image, defocus_map
 
     def _infer_one(self, image: Any, defocus_map: Any) -> BokehPrediction:
         """Run one native ARNet graph invocation on the supplied image region."""
@@ -353,6 +396,54 @@ class BokehMeARNet:
 
         return BokehPrediction(
             rgb_nchw=output,
+            width=width,
+            height=height,
+            preprocess_seconds=preprocess_seconds,
+            inference_seconds=inference_seconds,
+            tiled=True,
+            tile_count=tile_count,
+        )
+
+    def _infer_tiled_into_rgb(
+        self, image: Any, defocus_map: Any, output: Any
+    ) -> BokehPrediction:
+        """Write even-aligned ARNet tile cores into an HWC destination."""
+        height, width = image.shape[:2]
+        tile_count = 0
+        preprocess_seconds = 0.0
+        inference_seconds = 0.0
+        edge = self.inference_tile_edge
+        halo = BOKEH_TILE_HALO
+
+        for core_y0 in range(0, height, edge):
+            core_y1 = min(height, core_y0 + edge)
+            tile_y0 = max(0, core_y0 - halo)
+            tile_y1 = min(height, core_y1 + halo)
+            for core_x0 in range(0, width, edge):
+                core_x1 = min(width, core_x0 + edge)
+                tile_x0 = max(0, core_x0 - halo)
+                tile_x1 = min(width, core_x1 + halo)
+                prediction = self._infer_one(
+                    image[tile_y0:tile_y1, tile_x0:tile_x1],
+                    defocus_map[tile_y0:tile_y1, tile_x0:tile_x1],
+                )
+                local_y0 = core_y0 - tile_y0
+                local_y1 = local_y0 + core_y1 - core_y0
+                local_x0 = core_x0 - tile_x0
+                local_x1 = local_x0 + core_x1 - core_x0
+                for channel in range(3):
+                    output[core_y0:core_y1, core_x0:core_x1, channel] = (
+                        prediction.rgb_nchw[
+                            0, channel, local_y0:local_y1, local_x0:local_x1
+                        ]
+                    )
+                preprocess_seconds += prediction.preprocess_seconds
+                inference_seconds += prediction.inference_seconds
+                tile_count += 1
+                del prediction
+
+        return BokehPrediction(
+            rgb_nchw=None,
             width=width,
             height=height,
             preprocess_seconds=preprocess_seconds,
@@ -522,6 +613,19 @@ def full_frame_coc(depth: Any, focus: float, aperture: float) -> Any:
     return native
 
 
+def _mask_coc_inplace(coc: Any, alpha: Any, row_chunk_height: int) -> None:
+    """Apply subject protection with bounded complement storage."""
+    import numpy as np
+
+    height = coc.shape[0]
+    for row_start in range(0, height, row_chunk_height):
+        row_stop = min(height, row_start + row_chunk_height)
+        alpha_rows = alpha[row_start:row_stop]
+        complement = np.empty_like(alpha_rows)
+        np.subtract(np.float32(1.0), alpha_rows, out=complement)
+        np.multiply(coc[row_start:row_stop], complement, out=coc[row_start:row_stop])
+
+
 def _smooth(value: Any) -> Any:
     import numpy as np
 
@@ -625,7 +729,7 @@ def render_bokeh(
     optics_started = time.perf_counter()
     coc = full_frame_coc(depth_map, focus, aperture)
     if alpha is not None:
-        np.multiply(coc, np.float32(1.0) - alpha, out=coc)
+        _mask_coc_inplace(coc, alpha, row_chunk_height)
     scatter_coc = coc
     stage_seconds["optics"] = time.perf_counter() - optics_started
     max_abs_coc = _max_abs_rows(coc)
@@ -720,8 +824,20 @@ def render_bokeh(
         np.divide(small_coc, np.float32(actual_scale), out=defocus)
         np.divide(defocus, np.float32(10.0), out=defocus)
         np.clip(defocus, -1.0, 1.0, out=defocus)
-        prediction = model.infer(small_rgb, defocus)
-        enlarged = _resize_nchw_to_rgb(prediction.rgb_nchw, width, height, cv2)
+        infer_into_rgb = getattr(model, "infer_into_rgb", None)
+        will_tile = getattr(model, "will_tile", None)
+        direct_tiled_output = (
+            (pass_width, pass_height) == (width, height)
+            and callable(infer_into_rgb)
+            and callable(will_tile)
+            and will_tile(width, height)
+        )
+        if direct_tiled_output:
+            enlarged = np.empty((height, width, 3), dtype=np.float32)
+            prediction = infer_into_rgb(small_rgb, defocus, enlarged)
+        else:
+            prediction = model.infer(small_rgb, defocus)
+            enlarged = _resize_nchw_to_rgb(prediction.rgb_nchw, width, height, cv2)
         del prediction, small_rgb, small_coc, defocus
 
         if composite is None:

@@ -126,10 +126,19 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [x] Apply an explicitly selected GAIC crop after any processing mode through `ProcessingOptions`; suggestions remain an explicit separate model call.
 - [x] Add a bounded GAIC suggestion route at `/api/v1/compositions` and connect selected crop support to render tasks.
 - [x] Complete Web upload, mode/focus/aperture editing, progress/cancel, GAIC crop selection, preview comparison, and full PNG download in a browser smoke; Vitest and production build pass locally.
-- [ ] Validate more hair, fine-object and background-gap photos, and measure full-resolution subject protection and Linux cgroup limits.
+- [x] Validate additional curly-hair, long-hair and backlit wispy-hair photos; compare ViTMatte 512/768/1024 tiles and record soft-alpha and boundary metrics.
 - [ ] Six-platform GitHub Actions matrix passes before merge.
 - [x] Full-resolution M9 + Depth + ARNet + highlight run completed at 5760×3840 in a 3 GiB Linux cgroup with exact baseline pixel parity.
-- [ ] Full-resolution subject protection remains unmeasured; broaden hair, fine-object, background-gap, and multi-subject scene checks and measure API concurrency.
+- [x] Run the five-model path at 1080×2123 in a 3 GiB Linux task cgroup and record process RSS, cgroup peak, stage times, and output hash.
+- [x] Attempt native 5760×3840 subject protection under 3 GiB and 3.125 GiB cgroups; both OOM during the first full-resolution ARNet pass. Direct tiled output is bitwise equal to the full NCHW tensor on the real 1024×682 fixture, but the native task still fails.
+- [ ] Reduce/measure high-resolution live buffers and add per-tile cgroup sampling; then repeat native subject protection, fine-object/background-gap quality, and API concurrency. See [the current subject report](benchmarks/full-resolution-subject-protection-2026-10-22.md).
+
+## Full-resolution subject-memory branch (`perf/fullres-subject-protection`)
+
+- Tiled ARNet can write each core directly into the renderer's HWC float32 destination. Full-frame/odd/small input routing remains unchanged. A real `render_bokeh` comparison on the 1080×2123 P3M fixture produced the same RGB SHA-256 `3b9c87f6c337bbd29162eaf9abf76b42443214c9b28d8f86e6b04d53ae0dff79` with zero differing channel values; the direct-output prototype was slower (22.464 s vs 20.823 s), so production routing is limited to frames already using tiled ARNet.
+- Subject CoC masking now computes the complement in bounded row chunks. Unit fixtures compare exactly with the former whole-array expression and verify the alpha input is unchanged.
+- The direct sink removes construction of one 265,420,800-byte NCHW tensor at 5760×3840, but this is structural allocation accounting, not a measured peak reduction. Full 5760×3840 subject tasks still OOM at 3 and 3.125 GiB. The [benchmark report](benchmarks/full-resolution-subject-protection-2026-10-22.md) keeps last pre-kill samples separate from actual cgroup peaks.
+- The pipeline benchmark JSON now records focus, aperture, subject points, explicit output size, and ViTMatte tile size so runs can be reproduced from their result records.
 
 ## FastAPI branch verification
 
