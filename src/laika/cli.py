@@ -144,6 +144,22 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--depth-model", help="validated depth ONNX path")
     pipeline_parser.add_argument("--bokeh-model", help="validated ARNet ONNX path")
     pipeline_parser.add_argument(
+        "--sam-model-dir", help="local validated split SAM ONNX directory"
+    )
+    pipeline_parser.add_argument(
+        "--vitmatte-model", help="local validated ViTMatte ONNX path"
+    )
+    pipeline_parser.add_argument(
+        "--subject-point",
+        action="append",
+        default=[],
+        metavar="X,Y",
+        help="normalized foreground point; repeat for multiple subjects",
+    )
+    pipeline_parser.add_argument(
+        "--matte-tile-size", type=int, choices=(512, 768, 1024), default=1024
+    )
+    pipeline_parser.add_argument(
         "--strategy", choices=("low-memory", "balanced"), default="low-memory"
     )
     pipeline_parser.add_argument("--threads", type=int, default=None)
@@ -448,6 +464,15 @@ def _run_pipeline(args: argparse.Namespace) -> int:
     if (args.width is None) != (args.height is None):
         raise ValueError("--width and --height must be supplied together")
     output_size = (args.width, args.height) if args.width is not None else None
+    subject_points = []
+    for item in args.subject_point:
+        try:
+            x_text, y_text = item.split(",", maxsplit=1)
+            subject_points.append((float(x_text), float(y_text)))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError(
+                "--subject-point must use normalized X,Y coordinates"
+            ) from exc
     options = ProcessingOptions(
         mode=args.mode,
         strategy=args.strategy,
@@ -460,11 +485,15 @@ def _run_pipeline(args: argparse.Namespace) -> int:
         max_network_pixels=args.max_network_pixels,
         m9_row_chunk_height=args.m9_row_chunk_height,
         bokeh_row_chunk_height=args.bokeh_row_chunk_height,
+        subject_points=tuple(subject_points),
+        matte_tile_size=args.matte_tile_size,
     )
     with LaikaProcessingEngine(
         m9_model_path=args.m9_model,
         depth_model_path=args.depth_model,
         bokeh_model_path=args.bokeh_model,
+        sam_model_dir=args.sam_model_dir,
+        vitmatte_model_path=args.vitmatte_model,
         strategy=args.strategy,
         threads=args.threads,
         max_upload_bytes=args.max_upload_bytes,

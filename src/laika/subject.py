@@ -9,6 +9,7 @@ the oriented source image before mapping into SAM's fixed 1024-pixel frame.
 from __future__ import annotations
 
 import hashlib
+import json
 import threading
 import time
 from collections import OrderedDict
@@ -36,6 +37,10 @@ SAM_FEATURE_SHAPES = (
     (1, 64, 128, 128),
     (1, 256, 64, 64),
 )
+SAM_SOURCE_CHECKPOINT_SHA256 = (
+    "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69"
+)
+SAM_SOURCE_CODE_REVISION = "2b90b9f5ceec907a1c18123530e92e794ad901a4"
 _SAM_MEAN = (0.485, 0.456, 0.406)
 _SAM_STD = (0.229, 0.224, 0.225)
 _RESAMPLE_WORKING_BYTES = 4 * 1024 * 1024
@@ -566,6 +571,60 @@ class Sam2TinyOnnx:
         self._inference_lock = threading.RLock()
         self._validate_graph_contracts()
 
+    @classmethod
+    def from_validation_report(
+        cls,
+        model_dir: str | Path,
+        *,
+        cache_max_bytes: int = 96 * 1024 * 1024,
+        intra_op_num_threads: int = 1,
+        session_factory: Callable[[str | Path, int], Any] | None = None,
+    ) -> Sam2TinyOnnx:
+        """Load the local split graphs only when their exporter record matches."""
+        directory = Path(model_dir)
+        encoder_path = directory / "sam2.1_hiera_tiny_image_encoder.onnx"
+        decoder_path = directory / "sam2.1_hiera_tiny_image_decoder.onnx"
+        report_path = directory / "sam2.1_hiera_tiny.validation.json"
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SubjectInferenceError(
+                "SAM validation report is missing or invalid"
+            ) from exc
+        expected = {
+            "model_id": "sam2.1-hiera-tiny",
+            "checkpoint_sha256": SAM_SOURCE_CHECKPOINT_SHA256,
+            "upstream_source_revision": SAM_SOURCE_CODE_REVISION,
+            "status": "passed",
+        }
+        if any(report.get(key) != value for key, value in expected.items()):
+            raise SubjectInferenceError(
+                "SAM validation report does not match Hiera Tiny"
+            )
+        hashes = (
+            (encoder_path, report.get("image_encoder_sha256")),
+            (decoder_path, report.get("image_decoder_sha256")),
+        )
+        for path, expected_hash in hashes:
+            if not path.is_file() or not isinstance(expected_hash, str):
+                raise SubjectInferenceError(f"SAM ONNX graph is unavailable: {path}")
+            with path.open("rb") as stream:
+                actual_hash = hashlib.file_digest(stream, "sha256").hexdigest()
+            if actual_hash != expected_hash:
+                raise SubjectInferenceError(f"SAM ONNX SHA-256 mismatch: {path.name}")
+        instance = cls(
+            encoder_path,
+            decoder_path,
+            cache_max_bytes=cache_max_bytes,
+            intra_op_num_threads=intra_op_num_threads,
+            session_factory=session_factory,
+        )
+        instance.image_encoder_sha256 = hashes[0][1]
+        instance.image_decoder_sha256 = hashes[1][1]
+        instance.runtime_version = report.get("onnxruntime_version", "unknown")
+        instance.provider = "CPUExecutionProvider"
+        return instance
+
     @property
     def cache(self) -> ImageEmbeddingCache:
         return self._cache
@@ -575,6 +634,8 @@ class Sam2TinyOnnx:
         image_tensor: Any,
         point_coords: Any,
         point_labels: Any,
+        *,
+        cancel_check: Callable[[], None] | None = None,
     ) -> SubjectPrediction:
         """Predict three candidate masks using model-frame ``(x, y)`` prompts.
 
@@ -584,7 +645,12 @@ class Sam2TinyOnnx:
         with the same image tensor; the encoder outputs are then reused.
         """
         with self._inference_lock:
-            return self._predict_locked(image_tensor, point_coords, point_labels)
+            if cancel_check is not None:
+                cancel_check()
+            result = self._predict_locked(image_tensor, point_coords, point_labels)
+            if cancel_check is not None:
+                cancel_check()
+            return result
 
     def _predict_locked(
         self,

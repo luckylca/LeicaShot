@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+VITMATTE_CHECKPOINT_SHA256 = (
+    "bda9289db1bb6762d978b42d1c62ae3f34daf7497171a347a1d09657efd788cb"
+)
 
 
 class MatteInferenceError(RuntimeError):
@@ -211,6 +216,7 @@ def refine_matte_tiled(
     infer: Callable[[Any], Any],
     *,
     config: MatteTileConfig | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> Any:
     """Run a model callback by tile and return a full-resolution alpha tensor.
 
@@ -228,13 +234,19 @@ def refine_matte_tiled(
     height, width = values.shape[2:]
     trimap = values[0, 3]
     if not tiles:
+        if cancel_check is not None:
+            cancel_check()
         alpha = trimap.copy()
         alpha[trimap <= 0] = 0
         alpha[trimap >= 1] = 1
         return alpha[None, None]
 
     if len(tiles) == 1 and tiles[0].width == width and tiles[0].height == height:
+        if cancel_check is not None:
+            cancel_check()
         tile_alpha = _checked_alpha(infer(values), width, height).copy()
+        if cancel_check is not None:
+            cancel_check()
         tile_alpha[trimap <= 0] = 0
         tile_alpha[trimap >= 1] = 1
         np.clip(tile_alpha, 0, 1, out=tile_alpha)
@@ -245,11 +257,15 @@ def refine_matte_tiled(
     accumulation = np.zeros((height, width), dtype=np.float32)
     weights = np.zeros_like(accumulation)
     for tile in tiles:
+        if cancel_check is not None:
+            cancel_check()
         region = values[
             :, :, tile.y : tile.y + tile.height, tile.x : tile.x + tile.width
         ]
         tile_input = np.ascontiguousarray(region)
         tile_alpha = _checked_alpha(infer(tile_input), tile.width, tile.height).copy()
+        if cancel_check is not None:
+            cancel_check()
         np.clip(tile_alpha, 0, 1, out=tile_alpha)
         horizontal = _axis_feather(tile.width, tile.x, tile.width, width, feather)
         vertical = _axis_feather(tile.height, tile.y, tile.height, height, feather)
@@ -262,6 +278,8 @@ def refine_matte_tiled(
     unknown = (trimap > 0) & (trimap < 1)
     if np.any(unknown & (weights <= 0)):
         raise MatteInferenceError("tile plan left unknown trimap pixels uncovered")
+    if cancel_check is not None:
+        cancel_check()
     covered = weights > 0
     np.divide(accumulation, weights, out=accumulation, where=covered)
     accumulation[trimap <= 0] = 0
@@ -317,6 +335,14 @@ class ViTMatteOnnx:
             raise MatteInferenceError("ViTMatte ONNX model file does not exist")
         if _sha256_file(selected_path) != model_sha256.lower():
             raise MatteInferenceError("ViTMatte ONNX SHA-256 does not match")
+        self.model_sha256 = model_sha256.lower()
+        try:
+            from importlib.metadata import version
+
+            self.runtime_version = version("onnxruntime")
+        except Exception:  # metadata is optional for injected test sessions
+            self.runtime_version = "unknown"
+        self.provider = "CPUExecutionProvider"
         factory = session_factory or _create_onnx_session
         self._session = factory(selected_path, intra_op_num_threads)
         inputs = self._session.get_inputs()
@@ -341,6 +367,46 @@ class ViTMatteOnnx:
             raise MatteInferenceError(
                 "ONNX graph must have dynamic height and width for tile inference"
             )
+
+    @classmethod
+    def from_validation_report(
+        cls,
+        model_path: str | Path,
+        *,
+        intra_op_num_threads: int = 1,
+        session_factory: Callable[[str | Path, int], Any] | None = None,
+    ) -> ViTMatteOnnx:
+        """Load a graph only when its pinned-checkpoint export passed validation."""
+        selected_path = Path(model_path)
+        report_path = Path(f"{selected_path}.validation.json")
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MatteInferenceError(
+                "ViTMatte validation report is missing or invalid"
+            ) from exc
+        if (
+            report.get("model_id") != "vitmatte-small-composition-1k"
+            or report.get("checkpoint_sha256") != VITMATTE_CHECKPOINT_SHA256
+            or report.get("passed") is not True
+            or report.get("dynamic_shapes") is not True
+            or report.get("input_name") != "pixel_values"
+            or report.get("output_name") != "alpha"
+        ):
+            raise MatteInferenceError(
+                "ViTMatte validation report does not match the pinned Small model"
+            )
+        expected_sha256 = report.get("onnx_sha256")
+        if not isinstance(expected_sha256, str) or not re.fullmatch(
+            r"[0-9a-fA-F]{64}", expected_sha256
+        ):
+            raise MatteInferenceError("ViTMatte report has no valid ONNX SHA-256")
+        return cls(
+            selected_path,
+            model_sha256=expected_sha256,
+            intra_op_num_threads=intra_op_num_threads,
+            session_factory=session_factory,
+        )
 
     def infer(self, pixel_values: Any) -> Any:
         import numpy as np

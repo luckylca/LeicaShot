@@ -492,6 +492,7 @@ def render_bokeh(
     aperture: float,
     model: BokehMeARNet,
     *,
+    subject_alpha: Any | None = None,
     row_chunk_height: int = 128,
     cancel_check: Callable[[], None] | None = None,
     pass_callback: Callable[[int, int, float], None] | None = None,
@@ -519,12 +520,27 @@ def render_bokeh(
     ):
         raise ValueError("depth must be a matching contiguous H×W float32 map")
     _range_check(depth_map, 0.0, 1.0, "normalized depth")
+    alpha: Any | None = None
+    if subject_alpha is not None:
+        alpha = np.asarray(subject_alpha)
+        if (
+            alpha.dtype != np.float32
+            or alpha.shape != (height, width)
+            or not alpha.flags.c_contiguous
+            or not np.isfinite(alpha).all()
+            or float(alpha.min()) < 0.0
+            or float(alpha.max()) > 1.0
+        ):
+            raise ValueError("subject_alpha must be matching contiguous float32 [0, 1]")
     if row_chunk_height < 1:
         raise ValueError("row_chunk_height must be positive")
     started = time.perf_counter()
     stage_seconds: dict[str, float] = {}
     optics_started = time.perf_counter()
     coc = full_frame_coc(depth_map, focus, aperture)
+    if alpha is not None:
+        np.multiply(coc, np.float32(1.0) - alpha, out=coc)
+    scatter_coc = coc
     stage_seconds["optics"] = time.perf_counter() - optics_started
     max_abs_coc = _max_abs_rows(coc)
     if max_abs_coc < 1e-6:
@@ -564,7 +580,20 @@ def render_bokeh(
     stage_started = time.perf_counter()
     image_float = base_rgb.astype(np.float32)
     np.divide(image_float, np.float32(255.0), out=image_float)
-    target_scale = max(1.0, float(np.float32(max_abs_coc / 8.0)))
+    plate_coc = coc.copy() if alpha is not None else coc
+    if alpha is not None:
+        from laika.protection import fill_subject_background_inplace
+
+        fill_started = time.perf_counter()
+        fill_subject_background_inplace(
+            image_float,
+            plate_coc,
+            alpha,
+            cancel_check=cancel_check,
+        )
+        stage_seconds["subject_background_plate"] = time.perf_counter() - fill_started
+    plate_max_abs_coc = _max_abs_rows(plate_coc)
+    target_scale = max(1.0, float(np.float32(plate_max_abs_coc / 8.0)))
     total_passes = ceil(log2(target_scale)) + 1
     stage_seconds["prepare"] = time.perf_counter() - stage_started
     stage_started = time.perf_counter()
@@ -594,10 +623,10 @@ def render_bokeh(
                 interpolation=cv2.INTER_AREA,
             )
         if (pass_width, pass_height) == (width, height):
-            small_coc = coc
+            small_coc = plate_coc
         else:
             small_coc = cv2.resize(
-                coc,
+                plate_coc,
                 (pass_width, pass_height),
                 interpolation=cv2.INTER_LINEAR,
             )
@@ -615,7 +644,10 @@ def render_bokeh(
             for row_start in range(0, height, row_chunk_height):
                 row_stop = min(height, row_start + row_chunk_height)
                 weight = _smooth(
-                    (np.abs(coc[row_start:row_stop]) - np.float32(5.0 * previous_scale))
+                    (
+                        np.abs(plate_coc[row_start:row_stop])
+                        - np.float32(5.0 * previous_scale)
+                    )
                     / np.float32(3.0 * previous_scale)
                 )[:, :, None]
                 current = composite[row_start:row_stop]
@@ -639,7 +671,7 @@ def render_bokeh(
         if cancel_check is not None:
             cancel_check()
         row_stop = min(height, row_start + row_chunk_height)
-        weight = _smooth(np.abs(coc[row_start:row_stop]))[:, :, None]
+        weight = _smooth(np.abs(plate_coc[row_start:row_stop]))[:, :, None]
         mixed = image_float[row_start:row_stop] * (1.0 - weight)
         mixed += composite[row_start:row_stop] * weight
         np.clip(mixed, 0.0, 1.0, out=mixed)
@@ -654,7 +686,7 @@ def render_bokeh(
         recover_clipped_highlights_inplace(
             highlight_linear,
             image,
-            coc,
+            scatter_coc,
             row_chunk_height=row_chunk_height,
             cancel_check=cancel_check,
         )
@@ -669,7 +701,7 @@ def render_bokeh(
 
         scattered = scatter_highlights(
             highlight_linear,
-            coc,
+            scatter_coc,
             aperture,
             radius_scale=3.0,
             field_optics=True,
@@ -683,7 +715,7 @@ def render_bokeh(
         stage_started = time.perf_counter()
         soften_highlights_inplace(
             scattered,
-            coc,
+            scatter_coc,
             cancel_check=cancel_check,
         )
         stage_seconds["highlight_softening"] = time.perf_counter() - stage_started
@@ -706,7 +738,19 @@ def render_bokeh(
         stage_seconds["highlight_recovery"] = 0.0
         stage_seconds["highlight_softening"] = 0.0
         stage_seconds["highlight_composite"] = 0.0
-    del image_float, composite, coc, split, base_rgb, highlight_linear
+    if alpha is not None:
+        from laika.protection import composite_protected_subject
+
+        composite_started = time.perf_counter()
+        final_rgb = composite_protected_subject(
+            image,
+            final_rgb,
+            alpha,
+            row_chunk_height=row_chunk_height,
+            cancel_check=cancel_check,
+        )
+        stage_seconds["subject_composite"] = time.perf_counter() - composite_started
+    del image_float, composite, coc, plate_coc, split, base_rgb, highlight_linear
     if cancel_check is not None:
         cancel_check()
     return BokehRenderResult(
