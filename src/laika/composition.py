@@ -26,6 +26,13 @@ class CompositionInferenceError(RuntimeError):
     """A GAIC model or crop scoring request failed validation or inference."""
 
 
+class _InjectedRunOptions:
+    """Small cancellation object used only with a test-injected session."""
+
+    def __init__(self) -> None:
+        self.terminate = False
+
+
 @dataclass(frozen=True)
 class CompositionCrop:
     """Normalized half-open crop coordinates in EXIF-oriented image space."""
@@ -380,6 +387,7 @@ class GaicCompositionOnnx:
             # dependency set without requiring the optional inference extra.
             options = None
             factory = session_factory
+        self._ort = ort
         try:
             self._session = factory(
                 str(self.model_path),
@@ -476,7 +484,6 @@ class GaicCompositionOnnx:
         cancel_event: threading.Event | None = None,
     ) -> Any:
         import numpy as np
-        import onnxruntime as ort
 
         if self._session is None:
             raise CompositionInferenceError("GAIC ONNX session is closed")
@@ -488,7 +495,11 @@ class GaicCompositionOnnx:
         if cancel_check is not None:
             cancel_check()
         with self._inference_lock:
-            run_options = ort.RunOptions()
+            run_options = (
+                self._ort.RunOptions()
+                if self._ort is not None
+                else _InjectedRunOptions()
+            )
             stop_watcher = threading.Event()
             watcher: threading.Thread | None = None
             if cancel_event is not None:

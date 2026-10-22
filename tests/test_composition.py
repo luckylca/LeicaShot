@@ -97,8 +97,11 @@ def test_injected_session_does_not_require_optional_onnxruntime(
 
     monkeypatch.setattr(builtins, "__import__", import_without_onnxruntime)
     model, _session = _fake_model(tmp_path)
+    rgb = np.full((16, 24, 3), 127, dtype=np.uint8)
+    model.score(rgb, enumerate_candidate_crops(24, 16)[:2])
 
     assert model.runtime_version == "injected"
+    model.close()
 
 
 def test_crop_coordinates_snap_to_reference_pixel_rounding() -> None:
