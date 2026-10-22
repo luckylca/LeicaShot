@@ -1,0 +1,94 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: leicashot-api:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    cpus: ${LAIKA_CPU_LIMIT:-2}
+    mem_limit: ${LAIKA_MEMORY_LIMIT:-3g}
+    stop_grace_period: 45s
+    environment:
+      LAIKA_API_HOST: 0.0.0.0
+      LAIKA_API_PORT: 8000
+      LAIKA_API_STORAGE: /var/lib/laika/tasks
+      LAIKA_API_STRATEGY: ${LAIKA_API_STRATEGY:-low-memory}
+      LAIKA_API_THREADS: ${LAIKA_API_THREADS:-1}
+      LAIKA_API_MAX_WORKERS: ${LAIKA_API_MAX_WORKERS:-1}
+      LAIKA_API_QUEUE_CAPACITY: ${LAIKA_API_QUEUE_CAPACITY:-1}
+      LAIKA_API_MAX_UPLOAD_BYTES: ${LAIKA_API_MAX_UPLOAD_BYTES:-52428800}
+      LAIKA_API_MAX_PIXELS: ${LAIKA_API_MAX_PIXELS:-40000000}
+      LAIKA_API_MAX_NETWORK_PIXELS: ${LAIKA_API_MAX_NETWORK_PIXELS:-4000000}
+      LAIKA_API_MAX_STORAGE_BYTES: ${LAIKA_API_MAX_STORAGE_BYTES:-10737418240}
+      LAIKA_API_RESULT_TTL_SECONDS: ${LAIKA_API_RESULT_TTL_SECONDS:-21600}
+      LAIKA_API_CORS_ORIGINS: ${LAIKA_API_CORS_ORIGINS:-}
+      LAIKA_M9_MODEL: /models/leica-m9-v3-epoch11.fp16.onnx
+      LAIKA_DEPTH_MODEL: /models/depth-v2-small-dynamic-q64.onnx
+      LAIKA_BOKEH_MODEL: /models/legendary-1.0-arnet.fp16.onnx
+      LAIKA_SAM_MODEL_DIR: ${LAIKA_SAM_MODEL_DIR:-}
+      LAIKA_VITMATTE_MODEL: ${LAIKA_VITMATTE_MODEL:-}
+      LAIKA_GAIC_MODEL: ${LAIKA_GAIC_MODEL:-}
+    volumes:
+      - ${LAIKA_MODEL_DIR:-./models}:/models:ro
+      - leicashot-data:/var/lib/laika
+    ports:
+      - "${LAIKA_BIND_ADDRESS:-127.0.0.1}:${LAIKA_API_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3).read()
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging: &bounded-logs
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    image: leicashot-web:local
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    cpus: 0.5
+    mem_limit: 256m
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${LAIKA_BIND_ADDRESS:-127.0.0.1}:${LAIKA_WEB_PORT:-8080}:8080"
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging: *bounded-logs
+
+volumes:
+  leicashot-data:

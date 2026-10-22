@@ -53,3 +53,40 @@ jobs:
         run: python -m ruff check src tests scripts
       - name: Run tests
         run: python -m pytest -q
+
+  containers:
+    name: Docker API and Web · Linux
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+      - name: Build API and Web images
+        run: docker compose build --pull
+      - name: Start services without model assets
+        run: docker compose up -d
+      - name: Check API, Web and reverse proxy
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8000/api/v1/health \
+              --output /tmp/laika-api-health.json; then
+              break
+            fi
+            sleep 2
+          done
+          python -c "import json; assert json.load(open('/tmp/laika-api-health.json'))['status'] == 'ok'"
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8080/healthz; then
+              break
+            fi
+            sleep 2
+          done
+          curl --fail --silent http://127.0.0.1:8080/api/v1/health \
+            --output /tmp/laika-web-proxy-health.json
+          python -c "import json; assert json.load(open('/tmp/laika-web-proxy-health.json'))['status'] == 'ok'"
+          curl --fail --silent http://127.0.0.1:8080/ | grep -q 'id="root"'
+      - name: Stop and remove deployment data
+        if: always()
+        run: docker compose down --volumes
