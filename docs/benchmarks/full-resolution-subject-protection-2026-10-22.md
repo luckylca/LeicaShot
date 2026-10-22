@@ -185,3 +185,39 @@ memory and OOM counters alongside sampled process-tree RSS.
 - Instrument cgroup memory sampling inside the ARNet tile loop; the existing
   task-level sampler missed the allocation that crossed the limit in these OOM
   runs.
+
+## Source-loading audit addendum — 2026-10-23
+
+The per-tile telemetry request from the original next-work list is now
+implemented on `perf/fullres-cgroup-tile-telemetry`; current-source 5760×3840
+no-subject cgroup validation is running. Full-resolution subject memory remains
+unresolved until a source-verified five-model run completes.
+
+The Docker commands recorded for the 5760×3840 subject attempts did not set
+`PYTHONPATH=/opt/laika-src`. The benchmark image installs the package from its
+build context at `/app/src`; mounting the current checkout at `/opt/laika-src`
+does not make Python import it automatically. Container inspection confirmed
+that the `fullres-subject-*` runs therefore exercised the image's older
+installed package. Their exit-137/OOM observations remain observations of
+those commands, but they do **not** validate the direct HWC sink, 256-core
+tiles, or glibc-trim variants named in the table above. Those variant labels
+and conclusions are withdrawn pending runs that explicitly set
+`PYTHONPATH=/opt/laika-src` and verify `laika.bokeh.__file__` inside the
+container. This addendum preserves the original run record and corrects its
+interpretation.
+
+An explicitly source-loaded 5760×3840 subject request was then started on the
+PR #35 code with tile progress enabled. It reached ARNet first-pass tile 80/96
+before the Lima guest stopped. Docker recorded exit 255 and `OOMKilled=false`;
+this is an interrupted run, neither a completed task nor an OOM result. The
+last saved sample was 2,257,698,816 B cgroup current, 2,442,817,536 B sampled
+cgroup high-water, and 1,686,016,000 B process-tree RSS. Because the guest
+restarted before the final memory counters could be read, these values are
+partial samples and not final peaks. The saved per-tile progress log is
+`/tmp/laika-pipeline-results/arnet-tile-telemetry/fullres-src-3gb-interrupted-progress.jsonl`.
+
+The follow-up `perf/fullres-cgroup-tile-telemetry` run uses a CC0 5760×3840
+photo and the verified M9, Depth, and ARNet graphs with an explicit source
+import check. It omits SAM/ViTMatte and is scoped to validating telemetry and
+the no-subject full-resolution path; its final metrics will be appended only
+after the task completes.

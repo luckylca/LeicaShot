@@ -27,6 +27,21 @@ BOKEH_TILE_HALO = 16
 BOKEH_FULL_INFERENCE_PIXEL_LIMIT = 4_000_000
 
 
+@dataclass(frozen=True)
+class BokehTileProgress:
+    """One full-context ARNet tile entering or leaving inference."""
+
+    phase: Literal["started", "complete"]
+    index: int
+    count: int
+    frame_width: int
+    frame_height: int
+    x: int
+    y: int
+    width: int
+    height: int
+
+
 class BokehInferenceError(RuntimeError):
     """The local ARNet model or one of its tensor contracts is invalid."""
 
@@ -227,12 +242,18 @@ class BokehMeARNet:
             full_inference_pixel_limit=self.full_inference_pixel_limit,
         )
 
-    def infer(self, rgb: Any, defocus: Any) -> BokehPrediction:
+    def infer(
+        self,
+        rgb: Any,
+        defocus: Any,
+        *,
+        tile_callback: Callable[[BokehTileProgress], None] | None = None,
+    ) -> BokehPrediction:
         """Run ARNet once and return its owned NCHW output buffer."""
         image, defocus_map = self._validated_inputs(rgb, defocus)
         height, width = image.shape[:2]
         if self.will_tile(width, height):
-            return self._infer_tiled(image, defocus_map)
+            return self._infer_tiled(image, defocus_map, tile_callback=tile_callback)
         return self._infer_one(image, defocus_map)
 
     def will_tile(self, width: int, height: int) -> bool:
@@ -244,7 +265,14 @@ class BokehMeARNet:
             and width % 2 == 0
         )
 
-    def infer_into_rgb(self, rgb: Any, defocus: Any, output: Any) -> BokehPrediction:
+    def infer_into_rgb(
+        self,
+        rgb: Any,
+        defocus: Any,
+        output: Any,
+        *,
+        tile_callback: Callable[[BokehTileProgress], None] | None = None,
+    ) -> BokehPrediction:
         """Infer directly into a same-size HWC float32 destination.
 
         The tiled path writes each core into the caller-owned output as it is
@@ -267,7 +295,12 @@ class BokehMeARNet:
             )
 
         if self.will_tile(width, height):
-            return self._infer_tiled_into_rgb(image, defocus_map, destination)
+            return self._infer_tiled_into_rgb(
+                image,
+                defocus_map,
+                destination,
+                tile_callback=tile_callback,
+            )
 
         prediction = self._infer_one(image, defocus_map)
         for channel in range(3):
@@ -350,7 +383,13 @@ class BokehMeARNet:
             inference_seconds=inference_seconds,
         )
 
-    def _infer_tiled(self, image: Any, defocus_map: Any) -> BokehPrediction:
+    def _infer_tiled(
+        self,
+        image: Any,
+        defocus_map: Any,
+        *,
+        tile_callback: Callable[[BokehTileProgress], None] | None = None,
+    ) -> BokehPrediction:
         """Run exact convolutional tiles with full receptive-field overlap.
 
         The pinned ARNet applies an even-aligned 2×2 space-to-depth transform,
@@ -364,11 +403,12 @@ class BokehMeARNet:
 
         height, width = image.shape[:2]
         output = np.empty((1, 3, height, width), dtype=np.float32)
-        tile_count = 0
+        tile_index = 0
         preprocess_seconds = 0.0
         inference_seconds = 0.0
         edge = self.inference_tile_edge
         halo = BOKEH_TILE_HALO
+        tile_count = ceil(height / edge) * ceil(width / edge)
 
         for core_y0 in range(0, height, edge):
             core_y1 = min(height, core_y0 + edge)
@@ -378,6 +418,21 @@ class BokehMeARNet:
                 core_x1 = min(width, core_x0 + edge)
                 tile_x0 = max(0, core_x0 - halo)
                 tile_x1 = min(width, core_x1 + halo)
+                tile_index += 1
+                if tile_callback is not None:
+                    tile_callback(
+                        BokehTileProgress(
+                            phase="started",
+                            index=tile_index,
+                            count=tile_count,
+                            frame_width=width,
+                            frame_height=height,
+                            x=core_x0,
+                            y=core_y0,
+                            width=core_x1 - core_x0,
+                            height=core_y1 - core_y0,
+                        )
+                    )
                 prediction = self._infer_one(
                     image[tile_y0:tile_y1, tile_x0:tile_x1],
                     defocus_map[tile_y0:tile_y1, tile_x0:tile_x1],
@@ -391,8 +446,21 @@ class BokehMeARNet:
                 ]
                 preprocess_seconds += prediction.preprocess_seconds
                 inference_seconds += prediction.inference_seconds
-                tile_count += 1
                 del prediction
+                if tile_callback is not None:
+                    tile_callback(
+                        BokehTileProgress(
+                            phase="complete",
+                            index=tile_index,
+                            count=tile_count,
+                            frame_width=width,
+                            frame_height=height,
+                            x=core_x0,
+                            y=core_y0,
+                            width=core_x1 - core_x0,
+                            height=core_y1 - core_y0,
+                        )
+                    )
 
         return BokehPrediction(
             rgb_nchw=output,
@@ -405,15 +473,21 @@ class BokehMeARNet:
         )
 
     def _infer_tiled_into_rgb(
-        self, image: Any, defocus_map: Any, output: Any
+        self,
+        image: Any,
+        defocus_map: Any,
+        output: Any,
+        *,
+        tile_callback: Callable[[BokehTileProgress], None] | None = None,
     ) -> BokehPrediction:
         """Write even-aligned ARNet tile cores into an HWC destination."""
         height, width = image.shape[:2]
-        tile_count = 0
+        tile_index = 0
         preprocess_seconds = 0.0
         inference_seconds = 0.0
         edge = self.inference_tile_edge
         halo = BOKEH_TILE_HALO
+        tile_count = ceil(height / edge) * ceil(width / edge)
 
         for core_y0 in range(0, height, edge):
             core_y1 = min(height, core_y0 + edge)
@@ -423,6 +497,21 @@ class BokehMeARNet:
                 core_x1 = min(width, core_x0 + edge)
                 tile_x0 = max(0, core_x0 - halo)
                 tile_x1 = min(width, core_x1 + halo)
+                tile_index += 1
+                if tile_callback is not None:
+                    tile_callback(
+                        BokehTileProgress(
+                            phase="started",
+                            index=tile_index,
+                            count=tile_count,
+                            frame_width=width,
+                            frame_height=height,
+                            x=core_x0,
+                            y=core_y0,
+                            width=core_x1 - core_x0,
+                            height=core_y1 - core_y0,
+                        )
+                    )
                 prediction = self._infer_one(
                     image[tile_y0:tile_y1, tile_x0:tile_x1],
                     defocus_map[tile_y0:tile_y1, tile_x0:tile_x1],
@@ -439,8 +528,21 @@ class BokehMeARNet:
                     )
                 preprocess_seconds += prediction.preprocess_seconds
                 inference_seconds += prediction.inference_seconds
-                tile_count += 1
                 del prediction
+                if tile_callback is not None:
+                    tile_callback(
+                        BokehTileProgress(
+                            phase="complete",
+                            index=tile_index,
+                            count=tile_count,
+                            frame_width=width,
+                            frame_height=height,
+                            x=core_x0,
+                            y=core_y0,
+                            width=core_x1 - core_x0,
+                            height=core_y1 - core_y0,
+                        )
+                    )
 
         return BokehPrediction(
             rgb_nchw=None,
@@ -686,6 +788,7 @@ def render_bokeh(
     row_chunk_height: int = 128,
     cancel_check: Callable[[], None] | None = None,
     pass_callback: Callable[[int, int, float], None] | None = None,
+    tile_progress_callback: Callable[[int, int, BokehTileProgress], None] | None = None,
     stage_callback: Callable[[str, float], None] | None = None,
 ) -> BokehRenderResult:
     """Render a full-size photo through ARNet and depth-layered highlight scatter."""
@@ -832,11 +935,39 @@ def render_bokeh(
             and callable(will_tile)
             and will_tile(width, height)
         )
+        supports_tiling = callable(will_tile) and will_tile(pass_width, pass_height)
+        model_tile_callback = None
+        if supports_tiling and (
+            tile_progress_callback is not None or cancel_check is not None
+        ):
+
+            def on_tile(tile: BokehTileProgress) -> None:
+                if cancel_check is not None:
+                    cancel_check()
+                if tile_progress_callback is not None:
+                    tile_progress_callback(len(scales) + 1, total_passes, tile)
+
+            model_tile_callback = on_tile
         if direct_tiled_output:
             enlarged = np.empty((height, width, 3), dtype=np.float32)
-            prediction = infer_into_rgb(small_rgb, defocus, enlarged)
+            if model_tile_callback is None:
+                prediction = infer_into_rgb(small_rgb, defocus, enlarged)
+            else:
+                prediction = infer_into_rgb(
+                    small_rgb,
+                    defocus,
+                    enlarged,
+                    tile_callback=model_tile_callback,
+                )
         else:
-            prediction = model.infer(small_rgb, defocus)
+            if model_tile_callback is None:
+                prediction = model.infer(small_rgb, defocus)
+            else:
+                prediction = model.infer(
+                    small_rgb,
+                    defocus,
+                    tile_callback=model_tile_callback,
+                )
             enlarged = _resize_nchw_to_rgb(prediction.rgb_nchw, width, height, cv2)
         del prediction, small_rgb, small_coc, defocus
 

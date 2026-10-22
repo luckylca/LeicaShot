@@ -167,7 +167,12 @@ def main() -> int:
 
         def on_progress(event: Any) -> None:
             if event.stage == "bokeh":
-                if event.fraction < 0.69:
+                if (
+                    getattr(event, "details", None) is not None
+                    and event.details.get("component") == "arnet_tile"
+                ):
+                    stage = "bokeh.arnet_tile"
+                elif event.fraction < 0.69:
                     stage = "bokeh.highlight_extraction"
                 elif event.fraction < 0.82:
                     stage = "bokeh.arnet"
@@ -192,6 +197,8 @@ def main() -> int:
                     "process_tree_rss_bytes": peak.current_bytes(),
                     "cgroup_memory": _cgroup_memory(),
                 }
+                if getattr(event, "details", None) is not None:
+                    record["details"] = event.details
                 progress_stream.write(json.dumps(record, sort_keys=True) + "\n")
                 progress_stream.flush()
             print(

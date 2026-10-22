@@ -130,14 +130,14 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [ ] Six-platform GitHub Actions matrix passes before merge.
 - [x] Full-resolution M9 + Depth + ARNet + highlight run completed at 5760×3840 in a 3 GiB Linux cgroup with exact baseline pixel parity.
 - [x] Run the five-model path at 1080×2123 in a 3 GiB Linux task cgroup and record process RSS, cgroup peak, stage times, and output hash.
-- [x] Attempt native 5760×3840 subject protection under 3 GiB and 3.125 GiB cgroups; both OOM during the first full-resolution ARNet pass. Direct tiled output is bitwise equal to the full NCHW tensor on the real 1024×682 fixture, but the native task still fails.
-- [ ] Reduce/measure high-resolution live buffers and add per-tile cgroup sampling; then repeat native subject protection, fine-object/background-gap quality, and API concurrency. See [the current subject report](benchmarks/full-resolution-subject-protection-2026-10-22.md).
+- [ ] Complete a source-verified native 5760×3840 subject task under a measured cgroup limit. The historical 3 GiB and 3.125 GiB commands did not import the mounted PR #35 source, and the first verified-source retry was interrupted by Lima at tile 80/96. See the source-loading audit in [the subject report](benchmarks/full-resolution-subject-protection-2026-10-22.md).
+- [ ] Use the current per-tile cgroup telemetry to identify live high-resolution buffers; then repeat native subject protection, fine-object/background-gap quality, and API concurrency. See [the current subject report](benchmarks/full-resolution-subject-protection-2026-10-22.md).
 
 ## Full-resolution subject-memory branch (`perf/fullres-subject-protection`)
 
 - Tiled ARNet can write each core directly into the renderer's HWC float32 destination. Full-frame/odd/small input routing remains unchanged. A real `render_bokeh` comparison on the 1080×2123 P3M fixture produced the same RGB SHA-256 `3b9c87f6c337bbd29162eaf9abf76b42443214c9b28d8f86e6b04d53ae0dff79` with zero differing channel values; the direct-output prototype was slower (22.464 s vs 20.823 s), so production routing is limited to frames already using tiled ARNet.
 - Subject CoC masking now computes the complement in bounded row chunks. Unit fixtures compare exactly with the former whole-array expression and verify the alpha input is unchanged.
-- The direct sink removes construction of one 265,420,800-byte NCHW tensor at 5760×3840, but this is structural allocation accounting, not a measured peak reduction. Full 5760×3840 subject tasks still OOM at 3 and 3.125 GiB. The [benchmark report](benchmarks/full-resolution-subject-protection-2026-10-22.md) keeps last pre-kill samples separate from actual cgroup peaks.
+- The direct sink removes construction of one 265,420,800-byte NCHW tensor at 5760×3840, but this is structural allocation accounting, not a measured peak reduction. The previously reported full-resolution subject OOM runs loaded an older image-installed package, so current-source subject memory remains unknown. The [benchmark report](benchmarks/full-resolution-subject-protection-2026-10-22.md) keeps the original observations and appends the source-loading correction.
 - The pipeline benchmark JSON now records focus, aperture, subject points, explicit output size, and ViTMatte tile size so runs can be reproduced from their result records.
 
 ## FastAPI branch verification
@@ -152,3 +152,10 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [x] Six-platform remote Python CI and Node 24 Web CI for `feat/web-subject-protection` passed in PR #28.
 - [x] Linux cgroup v2 full-pipeline measurement for one real portrait at the documented guest/task limits; broader subject-photo quality, original-resolution tasks, service concurrency, and cross-platform edge parity remain open.
 - [x] Mirror-kernel reuse passes bitwise kernel tests, real scatter-array hash comparison, full real-photo renderer pixel parity, and a 4 GiB guest/3 GiB task-cgroup run at explicitly requested 2048×1365 output. The same 5760×3840 source-size task is OOM-killed at this budget; source-resolution memory optimization and repeated controlled timing remain open.
+
+## Per-tile cgroup telemetry follow-up (2026-10-23)
+
+- The merged PR #35 direct-HWC ARNet sink and row-bounded subject CoC mask have exact tensor/output parity evidence, but the prior full-resolution subject cgroup attempts did not load the mounted source tree. Their OOM results do not verify the claimed HWC/tile-size/glibc variants. See the source-loading audit addendum in the [subject memory report](benchmarks/full-resolution-subject-protection-2026-10-22.md).
+- Active `perf/fullres-cgroup-tile-telemetry` emits start/complete records for every full-context ARNet tile, carries phase/pass/tile bounds in engine progress, checks cancellation at tile boundaries, and writes per-tile process RSS/cgroup snapshots to the JSONL benchmark record. Unit tests cover complete tile coverage, monotonic progress, and cancellation cleanup.
+- Verified local-only M9, Depth, and ARNet artifacts recovered from the physical phone's reference APK have the same SHA-256 values as the pinned project assets. ONNX Runtime CPU smoke inference passed for all three; the Depth graph accepted two dynamic shapes. A source-loaded 5760×3840 no-subject task is in progress under a 3 GiB cgroup. This task validates telemetry and the existing three-model path; it does not cover SAM or ViTMatte.
+- Next acceptance after this PR: repeat the 5760×3840 five-model task with actual current-source imports and recovered SAM/ViTMatte ONNX assets, then test headroom, output parity, and edge quality before setting any native-resolution subject-memory conclusion.

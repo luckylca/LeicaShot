@@ -14,6 +14,7 @@ from laika.bokeh import (
     BOKEH_SOURCE_CHECKPOINT_SHA256,
     BokehInferenceError,
     BokehMeARNet,
+    BokehTileProgress,
     _mask_coc_inplace,
     focus_at_point,
     full_frame_coc,
@@ -184,12 +185,26 @@ def test_low_memory_arnet_tiles_even_images_and_matches_full_fake_session(
         session_factory=lambda *_args, **_kwargs: FakeSession(),
     )
     direct_rgb = np.empty_like(rgb)
-    direct = direct_engine.infer_into_rgb(rgb, defocus, direct_rgb)
+    tile_events: list[BokehTileProgress] = []
+    direct = direct_engine.infer_into_rgb(
+        rgb, defocus, direct_rgb, tile_callback=tile_events.append
+    )
 
     np.testing.assert_array_equal(direct_rgb, full.rgb_nchw[0].transpose(1, 2, 0))
     assert direct.rgb_nchw is None
     assert direct.tiled
     assert direct.tile_count == tiled.tile_count
+    assert len(tile_events) == direct.tile_count * 2
+    assert [event.phase for event in tile_events] == [
+        phase for _ in range(direct.tile_count) for phase in ("started", "complete")
+    ]
+    assert [event.index for event in tile_events[::2]] == list(
+        range(1, direct.tile_count + 1)
+    )
+    assert all(event.count == direct.tile_count for event in tile_events)
+    assert all(
+        (event.frame_width, event.frame_height) == (150, 130) for event in tile_events
+    )
 
 
 def test_low_memory_arnet_keeps_odd_dimensions_on_validated_full_path(

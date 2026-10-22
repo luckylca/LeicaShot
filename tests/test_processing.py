@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from laika.bokeh import BokehTileProgress
 from laika.composition import CompositionCrop
 from laika.processing import (
     LaikaProcessingEngine,
@@ -99,6 +100,62 @@ class FakeBokehEngine:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeTiledBokehEngine(FakeBokehEngine):
+    tile_inference_calls = 0
+
+    @staticmethod
+    def will_tile(width: int, height: int) -> bool:
+        return width * height > 5_000 and width % 2 == 0 and height % 2 == 0
+
+    def infer_into_rgb(
+        self,
+        rgb: np.ndarray,
+        _defocus: np.ndarray,
+        output: np.ndarray,
+        *,
+        tile_callback=None,
+    ) -> Any:
+        self.tile_inference_calls += 1
+        height, width = rgb.shape[:2]
+        tile = BokehTileProgress(
+            phase="started",
+            index=1,
+            count=1,
+            frame_width=width,
+            frame_height=height,
+            x=0,
+            y=0,
+            width=width,
+            height=height,
+        )
+        if tile_callback is not None:
+            tile_callback(tile)
+        output[:] = rgb.astype(np.float32) / np.float32(255.0)
+        if tile_callback is not None:
+            tile_callback(
+                BokehTileProgress(
+                    phase="complete",
+                    index=1,
+                    count=1,
+                    frame_width=width,
+                    frame_height=height,
+                    x=0,
+                    y=0,
+                    width=width,
+                    height=height,
+                )
+            )
+        return SimpleNamespace(
+            rgb_nchw=None,
+            width=width,
+            height=height,
+            tiled=True,
+            tile_count=1,
+            preprocess_seconds=0.0,
+            inference_seconds=0.01,
+        )
 
 
 class FakeSamEngine:
@@ -264,6 +321,74 @@ def test_unified_engine_runs_each_single_feature_without_loading_unused_models(
         assert set(result.models) == {"depth", "bokeh"}
         assert not FakeM9Engine.instances
     assert output.is_file()
+
+
+def test_tiled_arnet_progress_includes_tile_bounds_for_memory_sampling(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "result.png"
+    _source(source)
+    engine = _engine(mode="bokeh")
+    engine._bokeh_factory = FakeTiledBokehEngine
+    progress = []
+
+    with engine:
+        engine.process_file(
+            source,
+            output,
+            options=ProcessingOptions(mode="bokeh", aperture=2.8),
+            progress_callback=progress.append,
+        )
+
+    tile_events = [
+        event
+        for event in progress
+        if event.details is not None and "tile_bounds" in event.details
+    ]
+    assert [event.details["phase"] for event in tile_events] == [
+        "started",
+        "complete",
+    ]
+    assert all(event.details["component"] == "arnet_tile" for event in tile_events)
+    assert all(event.details["frame_size"] == [80, 64] for event in tile_events)
+    assert all(event.details["tile_bounds"] == [0, 0, 80, 64] for event in tile_events)
+    assert [event.fraction for event in progress if event.stage == "bokeh"] == sorted(
+        event.fraction for event in progress if event.stage == "bokeh"
+    )
+    assert FakeBokehEngine.instances[-1].tile_inference_calls == 1
+
+
+def test_cancellation_at_arnet_tile_boundary_does_not_publish_output(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "cancelled.png"
+    _source(source)
+    engine = _engine(mode="bokeh")
+    engine._bokeh_factory = FakeTiledBokehEngine
+    cancellation = threading.Event()
+
+    def cancel_at_tile_start(event: Any) -> None:
+        if (
+            event.details is not None
+            and event.details.get("component") == "arnet_tile"
+            and event.details.get("phase") == "started"
+        ):
+            cancellation.set()
+
+    with engine:
+        with pytest.raises(ProcessingCancelled):
+            engine.process_file(
+                source,
+                output,
+                options=ProcessingOptions(mode="bokeh"),
+                progress_callback=cancel_at_tile_start,
+                cancel_event=cancellation,
+            )
+
+    assert not output.exists()
+    assert FakeBokehEngine.instances[-1].closed
 
 
 @pytest.mark.parametrize("mode", ["color", "bokeh", "color+bokeh"])
