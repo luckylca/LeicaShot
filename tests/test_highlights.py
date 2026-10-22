@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from laika import highlights
 from laika.highlights import (
     aperture_kernel,
     composite_highlights,
@@ -47,6 +48,41 @@ def test_aperture_kernel_is_symmetric_normalized_and_aperture_shaped() -> None:
     assert float(polygon_kernel.sum()) == pytest.approx(1.0, abs=2e-7)
     np.testing.assert_array_equal(round_kernel, round_kernel[::-1, ::-1])
     assert not np.array_equal(round_kernel, polygon_kernel)
+
+
+@pytest.mark.parametrize("radius,aperture", [(7, 2.8), (63, 5.6)])
+def test_opposite_field_nodes_reuse_bitwise_identical_pupil_kernels(
+    monkeypatch: pytest.MonkeyPatch, radius: int, aperture: float
+) -> None:
+    shapes = [
+        highlights._optical_shape(x, y, 23, 19)
+        for y, *_ in highlights._field_axis_nodes(19)
+        for x, *_ in highlights._field_axis_nodes(23)
+    ]
+    reference = [
+        highlights._optical_pupil_kernel(radius, aperture, *shape) for shape in shapes
+    ]
+    original = highlights._optical_pupil_kernel
+    calls = 0
+
+    def counted_kernel(
+        kernel_radius: int,
+        kernel_aperture: float,
+        ux: float,
+        uy: float,
+        radial_ratio: float,
+    ) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return original(kernel_radius, kernel_aperture, ux, uy, radial_ratio)
+
+    monkeypatch.setattr(highlights, "_optical_pupil_kernel", counted_kernel)
+    actual = highlights._field_pupil_kernels(shapes, radius, aperture)
+
+    assert calls == 13
+    assert actual[0] is actual[-1]
+    for cached, direct in zip(actual, reference, strict=True):
+        np.testing.assert_array_equal(cached, direct)
 
 
 def test_fractional_constant_depth_interpolates_adjacent_full_psfs() -> None:
