@@ -138,8 +138,9 @@ RSS in the 5760×3840 cgroup attempt, so the default remains 512.
 At 5760×3840, the old intermediate full NCHW tensor contains
 `1 × 3 × 3840 × 5760 × 4 = 265,420,800` bytes (253 MiB). Direct output removes
 that full-frame allocation from the tiled path; this is an allocation-count
-reduction, not a measured 253 MiB peak reduction. The full-resolution subject
-task still OOMs, so further live-buffer and stage-lifecycle work is required.
+reduction, not a measured 253 MiB peak reduction. Full-resolution subject
+memory remains unresolved; the source-loading audit below withdraws the
+earlier OOM interpretation for runs that imported the old package image.
 
 A separate complete `render_bokeh` A/B on the 1080×2123 P3M image used the same
 real M9 RGB and depth map, ground-truth alpha, and ARNet model. Both paths
@@ -178,20 +179,23 @@ memory and OOM counters alongside sampled process-tree RSS.
 - Reduce live high-resolution image, highlight, CoC, and subject buffers so
   native-size five-model processing can pass a Linux memory limit without
   changing output dimensions or model quality.
-- Add per-tile memory progress to the cgroup harness so future OOM runs retain
-  the last allocation stage and actual cgroup peak.
+- Use tile-level telemetry to identify live allocations in a completed
+  source-verified five-model native-resolution run.
 - Extend reference-matte testing to flyaway hair, thin objects, and background
   holes, and repeat the 512/768/1024 comparison on those scenes.
-- Instrument cgroup memory sampling inside the ARNet tile loop; the existing
-  task-level sampler missed the allocation that crossed the limit in these OOM
-  runs.
+- The earlier cgroup sampler did not identify the native subject attempt's
+  terminal allocation; the verified-source attempt was interrupted by Lima,
+  not OOM-killed.
 
 ## Source-loading audit addendum — 2026-10-23
 
-The per-tile telemetry request from the original next-work list is now
-implemented on `perf/fullres-cgroup-tile-telemetry`; current-source 5760×3840
-no-subject cgroup validation is running. Full-resolution subject memory remains
-unresolved until a source-verified five-model run completes.
+The per-tile telemetry request from the original next-work list is implemented
+on `perf/fullres-cgroup-tile-telemetry`. A current-source 5760×3840 no-subject
+run completed under a 3 GiB cgroup with progress through all ARNet tiles and
+the highlight stages. It peaked at 2,696,331,264 B cgroup memory and
+2,357,911,552 B sampled process-tree RSS, with no cgroup OOM or limit events.
+It does not establish native-resolution subject-protection memory. Details are
+in the [tile telemetry report](arnet-tile-telemetry-2026-10-23.md).
 
 The Docker commands recorded for the 5760×3840 subject attempts did not set
 `PYTHONPATH=/opt/laika-src`. The benchmark image installs the package from its
@@ -216,8 +220,7 @@ restarted before the final memory counters could be read, these values are
 partial samples and not final peaks. The saved per-tile progress log is
 `/tmp/laika-pipeline-results/arnet-tile-telemetry/fullres-src-3gb-interrupted-progress.jsonl`.
 
-The follow-up `perf/fullres-cgroup-tile-telemetry` run uses a CC0 5760×3840
-photo and the verified M9, Depth, and ARNet graphs with an explicit source
-import check. It omits SAM/ViTMatte and is scoped to validating telemetry and
-the no-subject full-resolution path; its final metrics will be appended only
-after the task completes.
+The completed follow-up `perf/fullres-cgroup-tile-telemetry` run uses a CC0
+5760×3840 photo and verified M9, Depth, and ARNet graphs with an explicit
+source-import check. It omits SAM/ViTMatte and validates telemetry and the
+no-subject full-resolution path only; see the [run report](arnet-tile-telemetry-2026-10-23.md).
