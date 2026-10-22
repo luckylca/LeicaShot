@@ -4,10 +4,11 @@ Updated: 2026-10-22
 
 ## Current checkpoint
 
-- Stable integration branch: `develop`, at merge commit `548448c` after PR #27.
-- Most recent merged PR: [#27, Web editor and GAIC API suggestions](https://github.com/luckylca/LeicaShot/pull/27); all six macOS/Ubuntu/Windows Python 3.11/3.13 checks and Node 24 Web checks passed.
-- Active branch: `feat/web-subject-protection`; React controls for enabling subject protection, selecting/removing multiple positive points, and choosing the ViTMatte tile size are implemented. Four Web tests and the production build pass locally. A live Chrome run completed a real five-model task from click-selected points through full-size download.
-- Python production path only. Android is used only with `adb -s a4976c80` for reference Kotlin comparisons; the temporary comparison APK has a separate application ID, and the user's installed reference app was left intact.
+- Stable integration branch: `develop`, at merge commit `c7d3e5b` after PR #28.
+- Most recent merged PR: [#28, Web subject-protection controls](https://github.com/luckylca/LeicaShot/pull/28); Node 24 Web checks and all six macOS/Ubuntu/Windows Python 3.11/3.13 checks passed.
+- Active branch: `perf/linux-cgroup-pipeline`, created from the clean `develop` head. Current task: land cgroup measurements and a reproducible full-pipeline report; then proceed to exact-preserving optical-scatter CPU profiling.
+- The Web editor supports enabling SAM subject protection, selecting/removing multiple positive points, and choosing ViTMatte tile size. Four Web tests and the production build pass; a live Chrome run completed a real five-model task through full-size download.
+- Python is the only production processing path. Physical Android serial `a4976c80` is reserved for Kotlin reference comparisons; the connected emulator is not used. The user's installed reference app remains untouched.
 - The working GAIC checkpoint and ONNX export are local under `/tmp/laika-models/gaic`; neither is in Git.
 
 ## Models and verified assets
@@ -40,18 +41,25 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 - Same-photo subject-stage tile sweep: 512 / 768 / 1024 gave process-tree RSS 924,696,576 / 923,189,248 / 1,095,548,928 B and helper wall 73.84 / 89.38 / 144.55 s. Alpha IoU stayed between 0.98792 and 0.98804. The helper includes M9, SAM and ViTMatte but not Depth or ARNet; 512 was fastest, while additional scenes remain necessary before generalizing.
 - For the same source, Python subject compositing versus `SubjectProtectionMath.composite` on the physical ADB phone was MAE 0.0368, RMSE 0.5827, p95 absolute channel error 0, and 98.84% exact RGB pixels; maximum channel error was 68 on a small edge region. This fixture isolates final compositing and is not a comparison of SAM or ViTMatte inference.
 - Physical phone comparison: Python vs Kotlin M9/Lab on full-size output had PSNR 53.71 dB and 0.215 mean absolute 8-bit error. With the highlight stage enabled, the 2048×1365 bokeh comparison measured PSNR 41.38 dB, MAE 1.297 and p99 absolute channel error 8. This aggregate metric does not isolate highlight quality; the reference comparison limits are documented in the report.
-- No 4 GiB or 2 GiB full-pipeline acceptance result exists.
+- Linux cgroup results now exist for one 1080×1620 P3M portrait. In a 4 GiB configured guest/3 GiB task cgroup, all five models completed in 988.21 s with 2,097,229,824 B cgroup peak and no OOM. In a 2 GiB configured guest/1.5 GiB task cgroup, the same task completed in 1,196.67 s with 1,564,434,432 B cgroup peak, 1,545,293,824 B process-tree RSS and no OOM. Only about 8 MiB cgroup headroom remained. Linux output SHA was byte-identical across four memory configurations. This is a single-image challenge measurement, not broad 2 GiB service acceptance; see the [full report](benchmarks/linux-cgroup-full-pipeline-2026-10-22.md).
+
+## Active development checkpoint
+
+- PR #28 is merged and its CI passed. Its browser/API run exercised upload, three SAM points, M9, Depth, ViTMatte, ARNet, preview and original-size PNG download.
+- Linux validation used Lima 2.2.1, Docker CLI 29.9.2 and a rootful Ubuntu ARM64 VM. Models and photos were mounted read-only from local `/tmp` paths and were not uploaded. The reproducible benchmark image builds from tracked `tools/cgroup/Dockerfile`.
+- The cgroup benchmark reports Linux v1/v2 current, peak, limit and event counters alongside process-tree RSS. One 2 GiB guest run completed with only about 8 MiB below the task container's 1.5 GiB limit; system overhead, more images, higher resolutions and concurrency remain unverified.
+- A 128/512-row optical scatter comparison yielded byte-identical pixels; the 512-row scatter stage was faster once but used slightly more memory, with severe run-to-run timing noise in other stages. Keep 128 as default until repeated measurements. Next branch: `perf/optical-scatter-cpu`, profile symmetric pupil-kernel reuse, then measure original-resolution tasks.
 
 ## Known gaps and current blocker
 
 - The unified engine now coordinates M9, Depth, ARNet with highlights, SAM and ViTMatte. Full 5760×3840 processing with highlight scatter and subject protection still needs measurement; current coordinated evidence is a 1080×1620 photo.
-- RSS is close to, and slightly above, 2 GiB in decimal/roughly 2.05 GiB in binary units on this macOS run. It is not a Linux cgroup-limited result; no 2 GiB acceptance claim is made.
+- One 2 GiB configured Linux guest completed a constrained 1080×1620 task, but the app cgroup peaked at 99.5% of its 1.5 GiB cap and the run took about 20 minutes. This is not a supported 2 GiB service tier; broader data, cold-start variance and concurrent API tasks require measurement.
 - GAIC suggestions and crop application are implemented through the shared engine and CLI, and `/api/v1/compositions` now routes suggestions through the same bounded API worker pool. `ProcessingOptions.crop` still applies selected crops without rerunning GAIC.
 - PR #26 provides the FastAPI task service; PR #27 adds the React editor and `/api/v1/compositions`, with all seven CI checks passed. The API suggestion route scored 86 candidates in 1.403 s at 416,251,904 B sampled process-tree RSS, and the browser-verified editor flow downloaded a 918×1224 PNG.
-- The merged editor supports upload, color/bokeh/combined modes, focus clicks, aperture, GAIC crop suggestions, task progress/cancellation, before/after preview, and full PNG download. `feat/web-subject-protection` adds SAM point controls and ViTMatte tile selection; a live browser run selected three points, completed all five models, displayed the comparison, and downloaded the full-size PNG. A separate fixed-coordinate API run matched the prior SDK output exactly. Exact-origin API CORS is opt-in; the API has no user account/authentication layer, defaults to loopback, and uses per-task capability tokens.
+- The merged editor supports upload, color/bokeh/combined modes, focus clicks, aperture, GAIC crop suggestions, task progress/cancellation, before/after preview, full PNG download, and SAM/ViTMatte subject controls. PR #28's live browser run selected three points, completed all five models, displayed the comparison, and downloaded the full-size PNG. A separate fixed-coordinate API run matched the prior SDK output exactly. Exact-origin API CORS is opt-in; the API has no user account/authentication layer, defaults to loopback, and uses per-task capability tokens.
 - Full-resolution highlight runtime is high on CPU; the 2048×1365 optical scatter stage took about 141 seconds. Native acceleration or a mathematically validated faster execution plan remains a priority.
 - The only connected Android device for reference runs is the physical ADB target; do not use the attached emulator. Production image processing remains Python.
 
 ## Next action
 
-Commit and push the browser-verified subject-protection controls, pass all CI, then squash-merge the focused PR. Immediately start Linux cgroup full-pipeline memory acceptance; continue full-resolution optical-scatter profiling alongside it. Do not treat the 1080×1620 Mac measurements as low-memory server acceptance.
+Finish checks and merge the cgroup benchmark harness/report PR. Immediately create `perf/optical-scatter-cpu` and profile exact-preserving pupil-kernel reuse; continue original-resolution memory profiling, repeated cgroup timing, 8 GiB comparison, service concurrency and soft-edge parity work. Do not generalize this one 1080×1620 Linux challenge run into a deployment guarantee.

@@ -1,0 +1,17 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+build
+dist
+web/node_modules
+web/dist
+tests
+docs
+models
+__pycache__
+*.py[cod]
+*.onnx
+*.pt
+*.pth
+*.safetensors
