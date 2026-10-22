@@ -156,6 +156,68 @@ ViTMatte uses the pinned `hustvl/vitmatte-small-composition-1k` safetensors chec
 
 ## CPU inference adapter and CLI
 
+### GAIC MobileNetV2 crop scoring
+
+`laika.composition.GaicCompositionOnnx` loads the authorized GAIC MobileNetV2
+`reddim16` export on CPU. The pinned local checkpoint is SHA-256
+`eb1d5eed2710c79d3270add448111b9e6fa2475e246694c0ad995a6efb299e8c` from
+`bo-zhang-cs/GAIC-Pytorch` commit `877d6a325943c0a098324dc6d4a975ff4097c3f6`.
+The adapted implementation and its MIT notice are in
+[`tools/gaic_mobile_port.py`](../tools/gaic_mobile_port.py) and
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md). The checkpoint is a
+separate local model asset; project use is authorized by the user, and public
+redistribution rights are not asserted. Its record is
+[`models/gaic-local.json`](../models/gaic-local.json).
+
+Export from the verified local checkpoint. The exporter refuses a hash mismatch
+or overwrite, emits dynamic image and candidate axes, runs ONNX checker, and
+compares PyTorch scores to CPU ONNX on three shapes. Keep the `.validation.json`
+beside the graph because inference validates that report and the graph SHA.
+
+```bash
+python scripts/export_gaic_mobilenetv2_onnx.py \
+  --checkpoint /local/models/GAIC-mobilenetv2-reddim16.pth \
+  --output-dir /local/models/gaic/export --threads 1
+```
+
+The adapter accepts EXIF-oriented HWC `uint8` RGB, downsizes only the analysis
+raster to a maximum long edge of 1220 with OpenCV `INTER_LINEAR_EXACT`, and leaves the
+requested/source output dimensions intact. It uses ImageNet RGB normalization,
+replicate-pads axes smaller than 32 without rescaling, packs dynamic `[N,4]`
+crop boxes in analysis-image pixels, and scores all candidates in one CPU run.
+The grid and selection match the reference, include the full frame in scoring,
+and have no rule-score fallback. Cancellation uses ONNX Runtime `RunOptions` so
+an active GAIC inference can be terminated.
+
+```python
+from laika import CompositionCrop, LaikaProcessingEngine
+
+with LaikaProcessingEngine(
+    composition_model_path="/local/models/gaic/export/gaic-mobilenetv2-reddim16.fp32.onnx",
+    strategy="low-memory",
+) as engine:
+    proposals = engine.suggest_composition("input.jpg")
+    best = proposals.suggestions[0].crop
+    result = engine.apply_crop_file("processed.png", "crop.png", best)
+```
+
+`laika composition` prints proposals as JSON. `laika crop` applies a saved
+normalized box to an existing image, performs no model load or inference, keeps
+the image's original pixels and EXIF-oriented coordinate system, preserves ICC
+data, and writes PNG. Across three fresh workers on the measured 1080×1620
+P3M-10K portrait, 556 candidate scores took a median 1.016 s and process-tree
+RSS median was 353,615,872 B (observed range 343,523,328–362,512,384 B) on a
+MacBook Air M1 CPU. The applied 918×1224 crop took 0.176 s end-to-end. On a
+physical Xiaomi `2405CPX3DC` Android reference phone, Python and Kotlin selected
+the same top crop boxes from the actual photo; score deltas differed by at most
+0.0131 due to platform decode/resize differences. Same-tensor score deltas
+matched exactly. See the
+[GAIC real-photo report](../docs/benchmarks/gaic-real-photo-2026-10-22.md).
+
+This branch exposes suggestion and crop operations through the shared Python
+engine; composition is not yet an option inside `ProcessingOptions` and the
+FastAPI/Web editor is still pending.
+
 Install the optional inference dependencies with `pip install -e '.[inference]'`. The `DepthAnythingV2Small` Python adapter accepts an HWC `uint8` RGB array and returns a float32 depth map at the same width and height. It applies EXIF orientation only when the caller decodes an image; `laika depth` handles orientation, format checks, upload-byte and pixel limits, and writes a NumPy `.npy` array atomically. Defaults cap uploads at 50 MiB, source images at 40 million pixels, and derived network rasters at 4 million pixels. Over-limit requests fail instead of silently changing analysis dimensions. The adapter accepts only dynamic exports with a matching `.onnx.validation.json` report and graph SHA-256. The session uses CPUExecutionProvider and releases its native buffers on `close()` or context exit.
 
 ```python

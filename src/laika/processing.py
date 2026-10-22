@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -22,6 +22,7 @@ from laika.bokeh import (
     render_bokeh,
     resize_rgb_cubic,
 )
+from laika.composition import CompositionCrop, CompositionResult
 from laika.depth import DepthAnythingV2Small
 from laika.engine import (
     ImageInputError,
@@ -61,6 +62,7 @@ class ProcessingOptions:
     bokeh_row_chunk_height: int = 128
     subject_points: tuple[tuple[float, float], ...] = ()
     matte_tile_size: int = 1024
+    crop: CompositionCrop | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in ("color", "bokeh", "color+bokeh"):
@@ -82,6 +84,8 @@ class ProcessingOptions:
             raise ValueError("row chunk heights must be positive")
         if self.matte_tile_size not in (512, 768, 1024):
             raise ValueError("matte_tile_size must be 512, 768, or 1024")
+        if self.crop is not None and not isinstance(self.crop, CompositionCrop):
+            raise TypeError("crop must be a CompositionCrop")
         if len(self.subject_points) > MAX_SUBJECT_POINTS:
             raise ValueError(f"at most {MAX_SUBJECT_POINTS} subject points are allowed")
         for point in self.subject_points:
@@ -116,6 +120,23 @@ class ProcessingResult:
     height: int
     output_bytes: int
     models: dict[str, dict[str, Any]]
+    stage_seconds: dict[str, float]
+    total_seconds: float
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CropApplicationResult:
+    """Metadata for applying a previously selected composition crop."""
+
+    input_path: str
+    output_path: str
+    width: int
+    height: int
+    output_bytes: int
+    crop: tuple[float, float, float, float]
     stage_seconds: dict[str, float]
     total_seconds: float
 
@@ -180,6 +201,7 @@ class LaikaProcessingEngine:
         bokeh_model_path: str | os.PathLike[str] | None = None,
         sam_model_dir: str | os.PathLike[str] | None = None,
         vitmatte_model_path: str | os.PathLike[str] | None = None,
+        composition_model_path: str | os.PathLike[str] | None = None,
         strategy: ProcessingStrategy = "low-memory",
         threads: int | None = None,
         max_upload_bytes: int = 50 * 1024 * 1024,
@@ -191,6 +213,7 @@ class LaikaProcessingEngine:
         bokeh_factory: Callable[..., Any] | None = None,
         sam_factory: Callable[..., Any] | None = None,
         matte_factory: Callable[..., Any] | None = None,
+        composition_factory: Callable[..., Any] | None = None,
     ) -> None:
         if strategy not in ("low-memory", "balanced"):
             raise ValueError("strategy must be low-memory or balanced")
@@ -204,6 +227,9 @@ class LaikaProcessingEngine:
         self.sam_model_dir = Path(sam_model_dir) if sam_model_dir else None
         self.vitmatte_model_path = (
             Path(vitmatte_model_path) if vitmatte_model_path else None
+        )
+        self.composition_model_path = (
+            Path(composition_model_path) if composition_model_path else None
         )
         self.strategy = strategy
         self.threads = threads or (1 if strategy == "low-memory" else 4)
@@ -223,11 +249,17 @@ class LaikaProcessingEngine:
             matte_factory = ViTMatteOnnx.from_validation_report
         self._sam_factory = sam_factory
         self._matte_factory = matte_factory
+        if composition_factory is None:
+            from laika.composition import GaicCompositionOnnx
+
+            composition_factory = GaicCompositionOnnx.from_validation_report
+        self._composition_factory = composition_factory
         self._m9_engine: Any | None = None
         self._depth_engine: Any | None = None
         self._bokeh_engine: Any | None = None
         self._sam_engine: Any | None = None
         self._matte_engine: Any | None = None
+        self._composition_engine: Any | None = None
         self._lock = threading.RLock()
 
     def process_file(
@@ -284,6 +316,143 @@ class LaikaProcessingEngine:
                 cancel_event,
             )
 
+    def suggest_composition(
+        self,
+        input_path: str | os.PathLike[str],
+        *,
+        target_long_edge: int | None = None,
+        progress_callback: ProgressCallback | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> CompositionResult:
+        """Score GAIC crop proposals for an EXIF-oriented image without editing it."""
+        from laika.cli import _read_rgb
+        from laika.composition import analyze_composition_rgb
+
+        source = Path(input_path)
+        if not source.is_file():
+            raise ImageInputError("input path is not a regular file")
+        if self.composition_model_path is None:
+            raise ProcessingError("composition requires a configured GAIC model path")
+        if target_long_edge is not None and target_long_edge < 1:
+            raise ValueError("target_long_edge must be positive")
+
+        with self._lock:
+            started = time.perf_counter()
+
+            def check_cancelled() -> None:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise ProcessingCancelled("composition analysis was cancelled")
+
+            def notify(stage: str, fraction: float) -> None:
+                check_cancelled()
+                if progress_callback is not None:
+                    progress_callback(
+                        ProcessingProgress(
+                            stage=stage,
+                            fraction=fraction,
+                            elapsed_seconds=time.perf_counter() - started,
+                        )
+                    )
+                check_cancelled()
+
+            check_cancelled()
+            notify("composition-decode", 0.05)
+            stage_started = time.perf_counter()
+            rgb = _read_rgb(
+                source,
+                max_bytes=self.default_limits.max_upload_bytes,
+                max_pixels=self.default_limits.max_pixels,
+            )
+            decode_seconds = time.perf_counter() - stage_started
+            notify("composition-inference", 0.2)
+            model_reused = (
+                self.strategy == "balanced" and self._composition_engine is not None
+            )
+            model_started = time.perf_counter()
+            model, model_owned = self._acquire_composition()
+            model_load_seconds = (
+                0.0 if model_reused else time.perf_counter() - model_started
+            )
+            try:
+                result = analyze_composition_rgb(
+                    rgb,
+                    model,
+                    target_long_edge=target_long_edge,
+                    cancel_check=check_cancelled,
+                    cancel_event=cancel_event,
+                )
+            finally:
+                if model_owned:
+                    model.close()
+            del rgb, model
+            notify("complete", 1.0)
+            timings = dict(result.stage_seconds)
+            timings["decode"] = decode_seconds
+            timings["model_load"] = model_load_seconds
+            return replace(
+                result,
+                stage_seconds=timings,
+                total_seconds=time.perf_counter() - started,
+            )
+
+    def apply_crop_file(
+        self,
+        input_path: str | os.PathLike[str],
+        output_path: str | os.PathLike[str],
+        crop: CompositionCrop,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> CropApplicationResult:
+        """Apply a saved crop to an existing image without loading any AI model."""
+        from laika.cli import _read_rgb
+        from laika.composition import apply_crop_rgb
+
+        if not isinstance(crop, CompositionCrop):
+            raise TypeError("crop must be a CompositionCrop")
+        source = Path(input_path)
+        destination = Path(output_path)
+        if not source.is_file():
+            raise ImageInputError("input path is not a regular file")
+        if source.resolve() == destination.resolve():
+            raise ImageInputError("input and output paths must be different")
+        if destination.suffix.lower() != ".png":
+            raise ImageInputError("crop output must use a .png filename")
+        with self._lock:
+            started = time.perf_counter()
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProcessingCancelled("crop application was cancelled")
+            stage_started = time.perf_counter()
+            rgb = _read_rgb(
+                source,
+                max_bytes=self.default_limits.max_upload_bytes,
+                max_pixels=self.default_limits.max_pixels,
+            )
+            decode_seconds = time.perf_counter() - stage_started
+            stage_started = time.perf_counter()
+            cropped = apply_crop_rgb(rgb, crop)
+            crop_seconds = time.perf_counter() - stage_started
+            del rgb
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProcessingCancelled("crop application was cancelled")
+            stage_started = time.perf_counter()
+            output_bytes = _save_png(destination, cropped, _image_icc_profile(source))
+            export_seconds = time.perf_counter() - stage_started
+            height, width = cropped.shape[:2]
+            return CropApplicationResult(
+                input_path=str(source),
+                output_path=str(destination),
+                width=width,
+                height=height,
+                output_bytes=output_bytes,
+                crop=crop.as_tuple(),
+                stage_seconds={
+                    "decode": decode_seconds,
+                    "crop": crop_seconds,
+                    "export": export_seconds,
+                },
+                total_seconds=time.perf_counter() - started,
+            )
+
     def _process_locked(
         self,
         source: Path,
@@ -320,7 +489,11 @@ class LaikaProcessingEngine:
         use_color = options.mode in ("color", "color+bokeh")
         use_bokeh = options.mode in ("bokeh", "color+bokeh")
 
-        if options.mode == "color" and options.output_size is None:
+        if (
+            options.mode == "color"
+            and options.output_size is None
+            and options.crop is None
+        ):
             notify("color", 0.05)
             color_result = self._run_color(
                 source, destination, options, check_cancelled
@@ -414,7 +587,11 @@ class LaikaProcessingEngine:
             if use_color:
                 color_path = (
                     task_dir / "m9-color.png"
-                    if use_bokeh or options.output_size is not None
+                    if (
+                        use_bokeh
+                        or options.output_size is not None
+                        or options.crop is not None
+                    )
                     else destination
                 )
                 notify("color", 0.35 if use_bokeh else 0.05)
@@ -432,7 +609,11 @@ class LaikaProcessingEngine:
                     "runtime": color_result.runtime_version,
                     "provider": color_result.runtime_provider,
                 }
-                if use_bokeh or options.output_size is not None:
+                if (
+                    use_bokeh
+                    or options.output_size is not None
+                    or options.crop is not None
+                ):
                     frame_path = color_path
                     icc_profile = _image_icc_profile(color_path)
                 notify("color", 0.62 if use_bokeh else 0.4)
@@ -553,6 +734,17 @@ class LaikaProcessingEngine:
             else:
                 output_rgb = rgb
 
+            if options.crop is not None:
+                from laika.composition import apply_crop_rgb
+
+                notify("composition-crop", 0.935 if use_bokeh else 0.42)
+                stage_started = time.perf_counter()
+                output_rgb = apply_crop_rgb(output_rgb, options.crop)
+                stages["composition.crop"] = time.perf_counter() - stage_started
+                if not use_bokeh:
+                    del rgb
+                output_height, output_width = output_rgb.shape[:2]
+
             check_cancelled()
             notify("export", 0.94)
             stage_started = time.perf_counter()
@@ -642,6 +834,22 @@ class LaikaProcessingEngine:
             self._bokeh_factory(
                 self.bokeh_model_path,
                 strategy="low-memory",
+                intra_op_num_threads=self.threads,
+            ),
+            True,
+        )
+
+    def _acquire_composition(self) -> tuple[Any, bool]:
+        if self.strategy == "balanced":
+            if self._composition_engine is None:
+                self._composition_engine = self._composition_factory(
+                    self.composition_model_path,
+                    intra_op_num_threads=self.threads,
+                )
+            return self._composition_engine, False
+        return (
+            self._composition_factory(
+                self.composition_model_path,
                 intra_op_num_threads=self.threads,
             ),
             True,
@@ -803,6 +1011,7 @@ class LaikaProcessingEngine:
                 "_bokeh_engine",
                 "_sam_engine",
                 "_matte_engine",
+                "_composition_engine",
             ):
                 engine = getattr(self, name)
                 if engine is not None:
@@ -817,6 +1026,7 @@ class LaikaProcessingEngine:
 
 
 __all__ = [
+    "CropApplicationResult",
     "LaikaProcessingEngine",
     "ProcessingCancelled",
     "ProcessingError",
