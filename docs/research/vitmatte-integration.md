@@ -1,8 +1,11 @@
 # ViTMatte edge-refinement study
 
-**Status:** adapter and synthetic tiling regression are implemented on
-`feat/vitmatte-matte-tiling`. No ViTMatte checkpoint or converted graph has been
-downloaded, exported, or benchmarked by Laika.
+**Status:** the pinned local ViTMatte Small checkpoint has been hash-verified,
+exported to dynamic-spatial CPU ONNX, and compared against PyTorch at three
+resolutions. The tiled adapter is connected to the shared SAM/ViTMatte subject
+path; a three-point 1080×1620 real-photo run and dataset-mask quality report are
+recorded in
+[`../benchmarks/subject-protection-integration-2026-10-22.md`](../benchmarks/subject-protection-integration-2026-10-22.md).
 
 ## Reference contract
 
@@ -56,23 +59,25 @@ manifest.
   continues with a user-provided local asset. That confirmation does not assert
   public redistribution rights; keep weights outside the fetchable manifest
   and Git history.
-- The reference `models.json` contains checkpoint and ONNX hashes, but Laika has
-  not independently verified either artifact. Those values are not promoted to
-  Laika's model manifest or treated as a verified baseline.
+- The reference `models.json` contains checkpoint and ONNX hashes. Laika's
+  exporter validates the local checkpoint independently and writes a distinct
+  dynamic ONNX graph; both Laika artifact hashes are recorded in the integration
+  report.
 
 ## Validation scope and next experiments
 
-Current tests cover tensor normalization/padding, tile geometry, unknown-pixel
-coverage, endpoint preservation, output contract checks, CPU-session wiring,
-and a pointwise synthetic matte that is exactly independent of crop context.
-These tests verify implementation invariants only. They cannot measure hair
-matte quality, tile seams for the real ViTMatte model, ONNX parity, or memory
-and speed.
+The checkpoint-backed exporter passed 512×512, 640×768, and 1024×1024
+comparisons with maximum alpha errors of `1.41e-5`, `4.65e-6`, and `3.22e-6`.
+On the P3M-10K non-privacy 1080×1620 portrait, three positive points refined
+with 512-pixel tiles achieved binary IoU `0.98792`, soft alpha MAE `0.00715`,
+and 5-pixel boundary precision/recall `0.9059` / `0.8277` against the supplied
+JPEG mask. A single face point covered only a local head/neck region (IoU
+`0.2128`); separated subject regions require additional positive points. This
+is why the engine accepts repeated points and reuses one SAM image embedding.
 
-Next, use the authorized local checkpoint with a hash gate and dynamic ONNX
-exporter, compare outputs against the pinned PyTorch checkpoint on synthetic
-and authorized matte fixtures, and run
-fresh-process tile sweeps at 512/768/1024. Record tile-level and full subject
-stage RSS, cgroup peak, latency, max/mean/p99 alpha error, and seam-region
-metrics. No complete 4 GiB or 2 GiB Laika pipeline claim follows from the
-synthetic tests in this branch.
+The three-point M9 + Depth + ARNet + SAM + ViTMatte request peaked at
+`788,070,400` bytes process-tree RSS and took `112.73 s` on the 8 GiB MacBook
+Air M1. This is not a Linux cgroup run or a 4/2 GiB acceptance result. More
+photos, 768/1024 tile comparison, full-resolution tests and constrained Linux
+measurements remain open. See the integration report for the exact local model
+hashes, timings and reproducible command.

@@ -69,6 +69,8 @@ def test_pipeline_cli_routes_options_through_shared_engine(
         "m9_model_path": "m9.onnx",
         "depth_model_path": "depth.onnx",
         "bokeh_model_path": "arnet.onnx",
+        "sam_model_dir": None,
+        "vitmatte_model_path": None,
         "strategy": "balanced",
         "threads": 3,
         "max_upload_bytes": 50 * 1024 * 1024,

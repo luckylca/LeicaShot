@@ -100,11 +100,60 @@ class FakeBokehEngine:
         self.closed = True
 
 
+class FakeSamEngine:
+    instances: list[FakeSamEngine] = []
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.closed = False
+        self.predict_calls = 0
+        self.cache = SimpleNamespace(hits=0)
+        self.instances.append(self)
+
+    def predict(self, _image: Any, _coords: Any, _labels: Any, *, cancel_check=None):
+        from laika.subject import SubjectPrediction
+
+        if cancel_check is not None:
+            cancel_check()
+        self.predict_calls += 1
+        logits = np.full((1, 3, 256, 256), -1.0, dtype=np.float32)
+        logits[0, 0, 32:224, 32:224] = 1.0
+        scores = np.asarray([[0.9, 0.5, 0.1]], dtype=np.float32)
+        return SubjectPrediction(
+            mask_logits=logits,
+            scores=scores,
+            encoder_seconds=0.01 if self.predict_calls == 1 else 0.0,
+            decoder_seconds=0.02,
+            cache_hit=self.predict_calls > 1,
+        )
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeMatteEngine:
+    instances: list[FakeMatteEngine] = []
+
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.closed = False
+        self.model_sha256 = "vitmatte-test-hash"
+        self.inference_calls = 0
+        self.instances.append(self)
+
+    def infer(self, pixel_values: np.ndarray) -> np.ndarray:
+        self.inference_calls += 1
+        return pixel_values[:, 3:4].copy()
+
+    def close(self) -> None:
+        self.closed = True
+
+
 @pytest.fixture(autouse=True)
 def clear_fake_instances() -> None:
     FakeM9Engine.instances.clear()
     FakeDepthEngine.instances.clear()
     FakeBokehEngine.instances.clear()
+    FakeSamEngine.instances.clear()
+    FakeMatteEngine.instances.clear()
 
 
 def _source(path: Path, *, width: int = 80, height: int = 64) -> None:
@@ -131,6 +180,8 @@ def _engine(
         m9_factory=FakeM9Engine,
         depth_factory=FakeDepthEngine,
         bokeh_factory=FakeBokehEngine,
+        sam_factory=FakeSamEngine,
+        matte_factory=FakeMatteEngine,
     )
 
 
@@ -271,6 +322,58 @@ def test_cancellation_removes_temporary_files_and_does_not_publish_output(
 
     assert not output.exists()
     assert list(temp_root.iterdir()) == []
+
+
+def test_unified_engine_runs_sam_vitmatte_and_protected_bokeh_in_one_request(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "protected.png"
+    _source(source)
+    engine = _engine(mode="bokeh")
+    engine.sam_model_dir = tmp_path / "sam-onnx"
+    engine.vitmatte_model_path = tmp_path / "vitmatte.onnx"
+    options = ProcessingOptions(
+        mode="bokeh",
+        subject_points=((0.5, 0.5), (0.6, 0.55)),
+        matte_tile_size=512,
+    )
+
+    with engine:
+        result = engine.process_file(source, output, options=options)
+
+    with Image.open(output) as image:
+        assert image.size == (80, 64)
+        output_rgb = np.asarray(image.convert("RGB"))
+    assert set(result.models) == {"depth", "bokeh", "sam", "vitmatte"}
+    assert result.models["sam"]["embedding_cache_hits"] == 1
+    assert result.models["vitmatte"]["onnx_sha256"] == "vitmatte-test-hash"
+    assert result.stage_seconds["bokeh.subject_background_plate"] >= 0
+    assert result.stage_seconds["bokeh.subject_composite"] >= 0
+    assert FakeSamEngine.instances[0].predict_calls == 2
+    assert FakeSamEngine.instances[0].closed
+    assert FakeMatteEngine.instances[0].inference_calls >= 1
+    assert FakeMatteEngine.instances[0].closed
+    assert np.any(output_rgb != np.asarray(Image.open(source).convert("RGB")))
+
+
+def test_subject_points_require_bokeh_and_both_local_models(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "result.png"
+    _source(source)
+    engine = _engine(mode="color")
+    with pytest.raises(ProcessingError, match="requires a bokeh mode"):
+        engine.process_file(
+            source,
+            output,
+            options=ProcessingOptions(mode="color", subject_points=((0.5, 0.5),)),
+        )
+    with pytest.raises(ProcessingError, match="SAM and ViTMatte"):
+        _engine(mode="bokeh").process_file(
+            source,
+            output,
+            options=ProcessingOptions(mode="bokeh", subject_points=((0.5, 0.5),)),
+        )
     assert not FakeDepthEngine.instances
 
 

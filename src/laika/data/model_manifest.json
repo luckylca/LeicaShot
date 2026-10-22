@@ -27,7 +27,7 @@
       "sha256": "7402e0d864fa82708a20fbd15bc84245c2f26dff0eb43a4b5b93452deb34be69",
       "license": "Apache-2.0",
       "license_url": "https://github.com/facebookresearch/sam2/blob/2b90b9f5ceec907a1c18123530e92e794ad901a4/LICENSE",
-      "status": "weights-pinned-awaiting-independent-export-validation"
+      "status": "split-onnx-checkpoint-parity-validated-and-real-photo-pipeline-tested"
     },
     {
       "id": "bokehme-arnet-checkpoint",

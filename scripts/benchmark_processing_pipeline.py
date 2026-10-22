@@ -61,6 +61,18 @@ def main() -> int:
     parser.add_argument("--m9-model", type=Path)
     parser.add_argument("--depth-model", type=Path)
     parser.add_argument("--bokeh-model", type=Path)
+    parser.add_argument("--sam-model-dir", type=Path)
+    parser.add_argument("--vitmatte-model", type=Path)
+    parser.add_argument(
+        "--subject-point",
+        action="append",
+        default=[],
+        metavar="X,Y",
+        help="normalized foreground point; repeat for multiple subjects",
+    )
+    parser.add_argument(
+        "--matte-tile-size", type=int, choices=(512, 768, 1024), default=1024
+    )
     parser.add_argument(
         "--mode", choices=("color", "bokeh", "color+bokeh"), default="color+bokeh"
     )
@@ -79,6 +91,13 @@ def main() -> int:
         parser.error("--width and --height must be supplied together")
     if args.threads < 1 or args.bokeh_row_chunk_height < 1:
         parser.error("threads and row chunk height must be positive")
+    subject_points = []
+    for item in args.subject_point:
+        try:
+            x_text, y_text = item.split(",", maxsplit=1)
+            subject_points.append((float(x_text), float(y_text)))
+        except (ValueError, AttributeError):
+            parser.error("--subject-point must use normalized X,Y coordinates")
 
     started = time.perf_counter()
     with (
@@ -86,6 +105,8 @@ def main() -> int:
             m9_model_path=args.m9_model,
             depth_model_path=args.depth_model,
             bokeh_model_path=args.bokeh_model,
+            sam_model_dir=args.sam_model_dir,
+            vitmatte_model_path=args.vitmatte_model,
             strategy=args.strategy,
             threads=args.threads,
         ) as engine,
@@ -104,6 +125,8 @@ def main() -> int:
                 if args.width is not None
                 else None,
                 bokeh_row_chunk_height=args.bokeh_row_chunk_height,
+                subject_points=tuple(subject_points),
+                matte_tile_size=args.matte_tile_size,
             ),
         )
     report = {
