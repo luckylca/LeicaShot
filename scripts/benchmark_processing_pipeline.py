@@ -230,6 +230,16 @@ def main() -> int:
         "width": result.width,
         "height": result.height,
         "crop": args.crop.as_tuple() if args.crop is not None else None,
+        "processing_options": {
+            "focus_x": args.focus_x,
+            "focus_y": args.focus_y,
+            "aperture": args.aperture,
+            "subject_points": [list(point) for point in subject_points],
+            "output_size": [args.width, args.height]
+            if args.width is not None
+            else None,
+            "matte_tile_size": args.matte_tile_size,
+        },
         "threads": args.threads,
         "bokeh_row_chunk_height": args.bokeh_row_chunk_height,
         "host": {

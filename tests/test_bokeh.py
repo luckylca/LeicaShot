@@ -14,6 +14,7 @@ from laika.bokeh import (
     BOKEH_SOURCE_CHECKPOINT_SHA256,
     BokehInferenceError,
     BokehMeARNet,
+    _mask_coc_inplace,
     focus_at_point,
     full_frame_coc,
     normalize_depth_map,
@@ -174,6 +175,22 @@ def test_low_memory_arnet_tiles_even_images_and_matches_full_fake_session(
     assert len(tiled_session.calls) == tiled.tile_count
     assert tiled_engine.runtime_info.inference_tile_edge == 64
 
+    direct_engine = BokehMeARNet(
+        model,
+        strategy="low-memory",
+        inference_tile_edge=64,
+        full_inference_pixel_limit=100,
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+    )
+    direct_rgb = np.empty_like(rgb)
+    direct = direct_engine.infer_into_rgb(rgb, defocus, direct_rgb)
+
+    np.testing.assert_array_equal(direct_rgb, full.rgb_nchw[0].transpose(1, 2, 0))
+    assert direct.rgb_nchw is None
+    assert direct.tiled
+    assert direct.tile_count == tiled.tile_count
+
 
 def test_low_memory_arnet_keeps_odd_dimensions_on_validated_full_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -217,10 +234,25 @@ def test_depth_normalization_and_point_focus_match_reference_percentiles() -> No
     assert coc[0, 0] < 0 < coc[-1, -1]
 
 
+def test_subject_coc_row_chunks_match_full_expression_without_mutating_alpha() -> None:
+    rng = np.random.default_rng(14)
+    original_coc = rng.uniform(-5.0, 5.0, size=(23, 29)).astype(np.float32)
+    alpha = rng.random((23, 29), dtype=np.float32)
+    expected = original_coc * (np.float32(1.0) - alpha)
+    actual = original_coc.copy()
+    alpha_before = alpha.copy()
+
+    _mask_coc_inplace(actual, alpha, row_chunk_height=7)
+
+    np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(alpha, alpha_before)
+
+
 def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() -> None:
     class DarkenModel:
         def __init__(self) -> None:
             self.calls: list[tuple[int, int]] = []
+            self.direct_calls: list[tuple[int, int]] = []
 
         def infer(self, rgb: np.ndarray, defocus: np.ndarray) -> Any:
             height, width = rgb.shape[:2]
@@ -229,6 +261,18 @@ def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() ->
             return SimpleNamespace(
                 rgb_nchw=np.zeros((1, 3, height, width), dtype=np.float32)
             )
+
+        def infer_into_rgb(
+            self, rgb: np.ndarray, defocus: np.ndarray, output: np.ndarray
+        ) -> Any:
+            height, width = rgb.shape[:2]
+            self.direct_calls.append((width, height))
+            assert defocus.shape == (height, width)
+            output.fill(0.0)
+            return SimpleNamespace(width=width, height=height)
+
+        def will_tile(self, width: int, height: int) -> bool:
+            return width == 700 and height == 500
 
     rgb = np.full((500, 700, 3), 180, dtype=np.uint8)
     y = np.linspace(0.0, 1.0, 500, dtype=np.float32)[:, None]
@@ -250,12 +294,12 @@ def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() ->
     assert result.rgb.shape == rgb.shape
     assert result.rgb.dtype == np.uint8
     assert result.scales[0] == 1.0
-    assert len(result.scales) == len(model.calls) >= 2
+    assert len(result.scales) == len(model.calls) + len(model.direct_calls) >= 2
     assert [item[0] for item in completed_passes] == list(
         range(1, len(result.scales) + 1)
     )
     assert all(item[1] == len(result.scales) for item in completed_passes)
-    assert model.calls[0] == (700, 500)
+    assert model.direct_calls == [(700, 500)]
     assert np.all(result.rgb <= rgb)
     assert np.any(result.rgb < rgb)
     assert result.total_seconds >= 0
