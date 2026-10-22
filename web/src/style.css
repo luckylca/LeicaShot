@@ -197,6 +197,18 @@ select:disabled { opacity: .55; }
 .focus-section { padding-bottom: 15px; }
 .focus-readout { display: flex; justify-content: space-between; color: var(--dim); font-size: 8px; letter-spacing: .06em; }
 .focus-readout span:last-child { color: #aeb397; }
+.point-tool-row { display: grid; grid-template-columns: 1fr 1.25fr; gap: 6px; margin-top: 11px; }
+.point-tool { min-height: 32px; padding: 5px 7px; border: 1px solid #383b33; border-radius: 4px; background: #1c1f19; color: var(--muted); font-size: 9px; cursor: pointer; }
+.point-tool.selected { border-color: #68794a; background: rgba(196,221,114,.09); color: var(--green); }
+.point-tool:disabled { cursor: not-allowed; opacity: .45; }
+.subject-toggle.enabled { border-color: #68794a; color: var(--green); }
+.matte-label { margin-top: 13px; }
+.subject-point-list { display: grid; gap: 5px; margin-top: 10px; }
+.subject-point-row { display: flex; align-items: center; justify-content: space-between; min-height: 34px; padding: 4px 8px; border: 1px solid #30332b; border-radius: 4px; background: rgba(255,255,255,.02); color: #d9dbd1; font-size: 9px; }
+.subject-point-row small { display: block; margin-top: 3px; color: var(--dim); font-family: var(--mono); font-size: 8px; }
+.subject-point-row .text-button { padding: 4px; }
+.clear-points { justify-self: start; }
+.subject-warning { margin: 9px 0 0; color: #dfba75; font-size: 9px; line-height: 1.45; }
 
 .actions { display: grid; gap: 8px; padding-top: 17px; }
 .primary-button { min-height: 43px; padding: 0 13px; border: 0; background: var(--green); color: var(--green-ink); font-size: 12px; font-weight: 700; }
@@ -235,6 +247,7 @@ select:disabled { opacity: .55; }
 .focus-marker::before { width: 1px; height: 37px; }
 .focus-marker::after { width: 37px; height: 1px; }
 .focus-marker i { width: 4px; height: 4px; border-radius: 50%; background: #fff; }
+.subject-marker { position: absolute; z-index: 4; display: grid; width: 23px; height: 23px; place-items: center; transform: translate(-50%, -50%); border: 2px solid #20241a; border-radius: 50%; background: var(--green); color: #18200f; box-shadow: 0 0 0 2px rgba(196,221,114,.82), 0 2px 10px rgba(0,0,0,.55); font-family: var(--mono); font-size: 9px; font-weight: 700; pointer-events: none; }
 .image-badge { position: absolute; z-index: 4; top: 12px; padding: 6px 8px; border: 1px solid rgba(255,255,255,.26); border-radius: 2px; background: rgba(16,18,15,.55); color: #fff; font-size: 8px; letter-spacing: .1em; }
 .image-badge:not(.result-badge), .original-badge { left: 12px; }
 .result-badge { right: 12px; color: var(--green); }

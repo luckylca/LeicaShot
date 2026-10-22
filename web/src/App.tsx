@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ChangeEvent, DragEvent, MouseEvent } from "react";
 
 type Mode = "color" | "bokeh" | "color+bokeh";
+type Point = { x: number; y: number };
+type MatteTileSize = 512 | 768 | 1024;
 type Crop = { left: number; top: number; right: number; bottom: number };
 type Suggestion = {
   crop: Crop;
@@ -24,6 +26,7 @@ type TaskInfo = {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const APERTURES = [0.95, 1.8, 2.0, 2.8, 4.0, 5.6];
+const MAX_SUBJECT_POINTS = 16;
 const FULL_FRAME: Crop = { left: 0, top: 0, right: 1, bottom: 1 };
 
 async function readError(response: Response): Promise<string> {
@@ -55,6 +58,10 @@ export default function App() {
   const [crop, setCrop] = useState<Crop>(FULL_FRAME);
   const [mode, setMode] = useState<Mode>("color+bokeh");
   const [focus, setFocus] = useState({ x: 0.5, y: 0.5 });
+  const [subjectProtection, setSubjectProtection] = useState(false);
+  const [subjectPoints, setSubjectPoints] = useState<Point[]>([]);
+  const [matteTileSize, setMatteTileSize] = useState<MatteTileSize>(512);
+  const [pointTool, setPointTool] = useState<"focus" | "subject">("focus");
   const [aperture, setAperture] = useState(2.8);
   const [comparison, setComparison] = useState(50);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -92,6 +99,9 @@ export default function App() {
     setTask(null);
     setSuggestions([]);
     setCrop(FULL_FRAME);
+    setSubjectProtection(false);
+    setSubjectPoints([]);
+    setPointTool("focus");
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
@@ -146,10 +156,20 @@ export default function App() {
     if (!bounds.width || !bounds.height) return;
     const visibleX = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
     const visibleY = Math.min(1, Math.max(0, (event.clientY - bounds.top) / bounds.height));
-    setFocus({
+    const point = {
       x: Math.min(0.999999, displayedCrop.left + visibleX * (displayedCrop.right - displayedCrop.left)),
       y: Math.min(0.999999, displayedCrop.top + visibleY * (displayedCrop.bottom - displayedCrop.top)),
-    });
+    };
+    if (subjectProtection && pointTool === "subject") {
+      if (subjectPoints.length >= MAX_SUBJECT_POINTS) {
+        setError(`A maximum of ${MAX_SUBJECT_POINTS} subject points is supported.`);
+        return;
+      }
+      setSubjectPoints((current) => [...current, point]);
+      setError(null);
+      return;
+    }
+    setFocus(point);
   }
 
   async function requestComposition() {
@@ -177,6 +197,10 @@ export default function App() {
 
   async function processPhoto() {
     if (!file || busy) return;
+    if (subjectProtection && !subjectPoints.length) {
+      setError("Add at least one subject point before processing with subject protection.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setTask(null);
@@ -196,6 +220,8 @@ export default function App() {
           focus_y: focus.y,
           aperture,
           crop: isFullFrame(crop) ? undefined : cropTuple(crop),
+          subject_points: subjectProtection ? subjectPoints.map(({ x, y }) => [x, y]) : [],
+          matte_tile_size: matteTileSize,
         }),
       );
       const createResponse = await fetch(`${API_BASE}/api/v1/tasks`, {
@@ -282,6 +308,7 @@ export default function App() {
   }
 
   const activeCrop = !isFullFrame(crop);
+  const canUseBokeh = mode !== "color";
 
   return (
     <main className="app-shell">
@@ -316,7 +343,19 @@ export default function App() {
           <section className="control-section">
             <div className="section-heading"><span>01</span><h2>Render</h2></div>
             <label className="field-label" htmlFor="mode">Processing mode</label>
-            <select id="mode" value={mode} disabled={busy} onChange={(event) => setMode(event.target.value as Mode)}>
+            <select
+              id="mode"
+              value={mode}
+              disabled={busy}
+              onChange={(event) => {
+                const nextMode = event.target.value as Mode;
+                setMode(nextMode);
+                if (nextMode === "color") {
+                  setSubjectProtection(false);
+                  setPointTool("focus");
+                }
+              }}
+            >
               <option value="color+bokeh">M9 color + depth blur</option>
               <option value="color">M9 color only</option>
               <option value="bokeh">Depth blur only</option>
@@ -362,11 +401,94 @@ export default function App() {
 
           <section className="control-section focus-section">
             <div className="section-heading"><span>03</span><h2>Focus point</h2></div>
-            <div className="focus-readout"><span>Click the image to move focus</span><span>{Math.round(focus.x * 100)} · {Math.round(focus.y * 100)}</span></div>
+            <div className="focus-readout"><span>{pointTool === "subject" && subjectProtection ? "Click the image to add a subject point" : "Click the image to move focus"}</span><span>{Math.round(focus.x * 100)} · {Math.round(focus.y * 100)}</span></div>
+            {subjectProtection && canUseBokeh && (
+              <div className="point-tool-row" aria-label="Photo point tool">
+                <button
+                  className={pointTool === "focus" ? "point-tool selected" : "point-tool"}
+                  type="button"
+                  aria-pressed={pointTool === "focus"}
+                  disabled={busy}
+                  onClick={() => setPointTool("focus")}
+                >
+                  Set focus
+                </button>
+                <button
+                  className={pointTool === "subject" ? "point-tool selected" : "point-tool"}
+                  type="button"
+                  aria-pressed={pointTool === "subject"}
+                  disabled={busy || subjectPoints.length >= MAX_SUBJECT_POINTS}
+                  onClick={() => setPointTool("subject")}
+                >
+                  Add subject point
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section className="control-section subject-section">
+            <div className="section-heading"><span>04</span><h2>Subject protection</h2><small>SAM + MATTE</small></div>
+            <button
+              className={subjectProtection ? "secondary-button subject-toggle enabled" : "secondary-button subject-toggle"}
+              type="button"
+              disabled={busy || !file || !canUseBokeh}
+              aria-pressed={subjectProtection}
+              onClick={() => {
+                const enabled = !subjectProtection;
+                setSubjectProtection(enabled);
+                setPointTool(enabled ? "subject" : "focus");
+              }}
+            >
+              {subjectProtection ? "Subject protection enabled" : "Protect selected subject"}
+            </button>
+            {!canUseBokeh ? (
+              <p className="control-hint">Choose a depth blur mode to protect a subject.</p>
+            ) : subjectProtection ? (
+              <>
+                <label className="field-label matte-label" htmlFor="matte-tile-size">Matting tile size</label>
+                <select
+                  id="matte-tile-size"
+                  value={matteTileSize}
+                  disabled={busy}
+                  onChange={(event) => setMatteTileSize(Number(event.target.value) as MatteTileSize)}
+                >
+                  <option value={512}>512 · Lower memory</option>
+                  <option value={768}>768 · Balanced context</option>
+                  <option value={1024}>1024 · More context</option>
+                </select>
+                <p className="control-hint">
+                  Select “Add subject point”, then click each part of the subject in the photo. Up to {MAX_SUBJECT_POINTS} positive points are supported.
+                </p>
+                {subjectPoints.length > 0 && (
+                  <div className="subject-point-list" aria-label="Selected subject points">
+                    {subjectPoints.map((point, index) => (
+                      <div className="subject-point-row" key={`${point.x}-${point.y}-${index}`}>
+                        <span>Point {index + 1}<small>{Math.round(point.x * 100)} · {Math.round(point.y * 100)}</small></span>
+                        <button
+                          className="text-button"
+                          type="button"
+                          disabled={busy}
+                          aria-label={`Remove subject point ${index + 1}`}
+                          onClick={() => setSubjectPoints((current) => current.filter((_, pointIndex) => pointIndex !== index))}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                    <button className="text-button clear-points" type="button" disabled={busy} onClick={() => setSubjectPoints([])}>
+                      Clear all points
+                    </button>
+                  </div>
+                )}
+                {subjectProtection && subjectPoints.length === 0 && <p className="subject-warning">Add a point on the subject before processing.</p>}
+              </>
+            ) : (
+              <p className="control-hint">Keep the subject sharp while the background receives depth blur. Local SAM and ViTMatte models are required.</p>
+            )}
           </section>
 
           <div className="actions">
-            <button className="primary-button" type="button" disabled={!file || busy} onClick={processPhoto}>
+            <button className="primary-button" type="button" disabled={!file || busy || (subjectProtection && subjectPoints.length === 0)} onClick={processPhoto}>
               {busy ? <span className="spinner" /> : null}
               {busy ? "Processing photo" : "Process photo"}<span aria-hidden="true">→</span>
             </button>
@@ -395,7 +517,7 @@ export default function App() {
                   style={frameStyle}
                   onClick={onPreviewClick}
                   role="img"
-                  aria-label="Photo preview. Click to set the depth focus point."
+                  aria-label={pointTool === "subject" && subjectProtection ? "Photo preview. Click to add a subject point." : "Photo preview. Click to set the depth focus point."}
                 >
                   <img
                     className="original-image"
@@ -406,6 +528,19 @@ export default function App() {
                   />
                   {resultUrl && <img className="result-image" src={resultUrl} alt="Processed photograph" style={{ clipPath: `inset(0 ${100 - comparison}% 0 0)` }} />}
                   {mode !== "color" && <span className="focus-marker" style={originalMarker}><i /></span>}
+                  {subjectProtection && subjectPoints.map((point, index) => (
+                    <span
+                      className="subject-marker"
+                      key={`${point.x}-${point.y}-${index}`}
+                      style={{
+                        left: `${((point.x - displayedCrop.left) / (displayedCrop.right - displayedCrop.left)) * 100}%`,
+                        top: `${((point.y - displayedCrop.top) / (displayedCrop.bottom - displayedCrop.top)) * 100}%`,
+                      }}
+                      aria-label={`Subject point ${index + 1}`}
+                    >
+                      {index + 1}
+                    </span>
+                  ))}
                   {resultUrl && <span className="comparison-divider" style={{ left: `${comparison}%` }} />}
                   {!resultUrl && <span className="image-badge">ORIGINAL</span>}
                   {resultUrl && <><span className="image-badge original-badge">BEFORE</span><span className="image-badge result-badge">AFTER</span></>}

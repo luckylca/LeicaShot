@@ -110,4 +110,111 @@ describe("LeicaShot editor", () => {
       });
     });
   });
+
+  it("sends multiple subject prompts and the selected matte tile size", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/api/v1/tasks") && init?.method === "POST") {
+        return Response.json(
+          {
+            id: "subject-task",
+            status: "queued",
+            stage: "queued",
+            progress: 0,
+            error: null,
+            access_token: "subject-token",
+            status_url: "/api/v1/tasks/subject-task",
+            cancel_url: "/api/v1/tasks/subject-task/cancel",
+          },
+          { status: 202 },
+        );
+      }
+      if (url.endsWith("/api/v1/tasks/subject-task")) {
+        return Response.json({
+          id: "subject-task",
+          status: "completed",
+          stage: "complete",
+          progress: 1,
+          error: null,
+          preview_url: "/api/v1/tasks/subject-task/preview",
+          download_url: "/api/v1/tasks/subject-task/download",
+        });
+      }
+      if (url.endsWith("/preview")) {
+        return new Response(new Blob(["preview"], { type: "image/png" }));
+      }
+      return Response.json({ status: "ok" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Choose a photograph"), {
+      target: { files: [imageFile()] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /protect selected subject/i }));
+    fireEvent.change(screen.getByLabelText("Matting tile size"), {
+      target: { value: "768" },
+    });
+
+    const frame = screen.getByRole("img", { name: /photo preview/i });
+    vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({
+      x: 10,
+      y: 20,
+      left: 10,
+      top: 20,
+      right: 110,
+      bottom: 220,
+      width: 100,
+      height: 200,
+      toJSON: () => ({}),
+    });
+    fireEvent.click(frame, { clientX: 35, clientY: 80 });
+    fireEvent.click(frame, { clientX: 80, clientY: 120 });
+    expect(screen.getByText("Point 2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /process photo/i }));
+
+    await screen.findByRole("button", { name: /download full png/i }, { timeout: 3000 });
+    const createCall = fetchMock.mock.calls.find(
+      ([input, init]) => String(input).endsWith("/api/v1/tasks") && init?.method === "POST",
+    );
+    const body = createCall?.[1]?.body as FormData;
+    const options = JSON.parse(String(body.get("options"))) as {
+      subject_points: [number, number][];
+      matte_tile_size: number;
+    };
+    expect(options.subject_points).toEqual([
+      [0.25, 0.3],
+      [0.7, 0.5],
+    ]);
+    expect(options.matte_tile_size).toBe(768);
+  });
+
+  it("caps subject protection at sixteen positive points", () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ status: "ok" })));
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText("Choose a photograph"), {
+      target: { files: [imageFile()] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /protect selected subject/i }));
+    const frame = screen.getByRole("img", { name: /photo preview/i });
+    vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({
+      x: 0,
+      y: 0,
+      left: 0,
+      top: 0,
+      right: 100,
+      bottom: 100,
+      width: 100,
+      height: 100,
+      toJSON: () => ({}),
+    });
+    for (let index = 0; index < 17; index += 1) {
+      fireEvent.click(frame, { clientX: 20 + index, clientY: 30 + index });
+    }
+
+    expect(screen.getByText("Point 16")).toBeInTheDocument();
+    expect(screen.queryByText("Point 17")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("maximum of 16");
+  });
 });

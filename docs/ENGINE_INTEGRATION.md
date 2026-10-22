@@ -56,6 +56,7 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - Subject protection is optional and requires a Bokeh mode plus local validated SAM and ViTMatte model paths. It computes alpha at an analysis long edge up to 2048, then restores alpha to the requested output dimensions without reducing the exported photo.
 - The subject alpha reduces CoC before ARNet and highlight scatter. A pull-push fill creates a clean background plate under the subject, then the sharp M9/Lab image is composited over the rendered background with row-chunked edge decontamination.
 - The P3M-10K 1080×1620 three-point CPU run measured 788,070,400 B process-tree RSS and 112.73 s. Its three points produced mask IoU 0.9879; SAM encoder cache recorded two hits. On the same alpha/source/background arrays, the Python final composite matched the Kotlin phone reference within MAE 0.0368 and RMSE 0.5827 (98.84% of RGB pixels exactly equal). See [subject-protection benchmark](benchmarks/subject-protection-integration-2026-10-22.md).
+- The Web editor's active `feat/web-subject-protection` branch adds positive point placement/removal and tile-size selection. A real five-model `/api/v1/tasks` request with those three points and 512-pixel tiles completed in 102.177 s at 1,029,177,344 B sampled service process-tree RSS. It recorded two SAM embedding-cache hits, retained 1080×1620 output, and matched the earlier SDK output SHA exactly; see the [Web subject API report](benchmarks/web-subject-protection-2026-10-22.md).
 
 ## GAIC composition integrated on `feat/gaic-composition-integration`
 
@@ -75,6 +76,7 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - Local end-to-end API benchmark uploaded one 1080×1620 P3M portrait and ran M9, Depth, ARNet and crop in the same task. It returned a 918×1224 PNG, sampled 698,236,928 B server process-tree peak RSS, and took 90.604 s task wall time on an 8 GiB MacBook Air M1 (CPU-only, one thread). See [API task benchmark](benchmarks/api-task-real-photo-2026-10-22.md). This was not cgroup-limited and had no full-frame Kotlin quality comparison.
 - The API is a thin adapter and does not change SDK/CLI engine behavior. Its queue/status live in process memory; current deployment is a single Uvicorn process. It binds to loopback by default and uses per-task capability tokens, not user accounts.
 - `/api/v1/compositions` accepts a validated upload and returns real GAIC crop proposals. It uses the same bounded worker pool, storage admission, and model lifecycle strategy as render tasks. The 1080×1620 CPU test scored 86 candidates in 1.403 s at 416,251,904 B sampled process-tree peak RSS; see [composition API benchmark](benchmarks/api-composition-real-photo-2026-10-22.md).
+- Task options carry normalized subject points and ViTMatte tile size directly into the same engine call. The five-model API run with three prompts returned a 1080×1620 result in 102.177 s at 1,029,177,344 B sampled RSS; SAM ran its encoder once and served two prompts from its embedding cache.
 - Linux cgroup measurements remain in progress. The Web editor's real upload → GAIC suggestion → combined render → preview → PNG download path passed a Chrome smoke run; `docs/WEB.md` records the downloaded output hash and dimensions. Cross-origin access is opt-in through exact `LAIKA_API_CORS_ORIGINS` origins.
 
 ## Current integration limits
@@ -118,6 +120,7 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - [x] Active upload reservations account for remaining configured workspace budget, with a regression test for concurrent reservation.
 - [x] Local suite: 171 Python tests; Ruff lint and format checks pass.
 - [x] GAIC suggestions run through the HTTP route with local authorized model; route timing/RSS and model hash are documented.
-- [x] Frontend: two Vitest interaction tests and `npm run build` pass locally.
-- [ ] Six-platform remote Python CI and Node 24 Web CI for `feat/web-editor`.
+- [x] Web editor: upload/GAIC/render/preview/download browser flow passed on `feat/web-editor`; remote Node 24 and six-platform Python CI passed in PR #27.
+- [x] Subject controls serialize multi-point prompts and selected tile size, and cap selection at 16 points; four Vitest tests and Vite production build pass locally. Live Chrome completed the full upload → subject prompts → five-model task → preview → PNG download flow. The direct API benchmark records RSS/timing and exact SDK output parity.
+- [ ] Six-platform remote Python CI and Node 24 Web CI for `feat/web-subject-protection`.
 - [ ] Linux cgroup acceptance and broader subject-photo quality validation.

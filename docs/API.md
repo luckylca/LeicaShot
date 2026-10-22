@@ -94,9 +94,10 @@ curl http://127.0.0.1:8000/api/v1/tasks/TASK_ID \
 Options support the processing modes `color`, `bokeh`, and `color+bokeh`,
 `low-memory` or `balanced` strategy, normalized focus coordinates, a supported
 aperture, optional `[width,height]` output dimensions, a selected normalized
-crop, subject points, ViTMatte tile size, and row chunk sizes. Output dimensions
-remain at the oriented source size unless an explicit output size or crop is
-requested.
+crop, up to 16 normalized positive `subject_points`, ViTMatte `matte_tile_size`
+(512, 768, or 1024), and row chunk sizes. Subject points require a blur mode
+and configured local SAM plus ViTMatte models. Output dimensions remain at the
+oriented source size unless an explicit output size or crop is requested.
 
 Cancel a queued or running task:
 
