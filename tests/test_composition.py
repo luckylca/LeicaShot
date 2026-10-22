@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import threading
@@ -82,6 +83,22 @@ def _fake_model(tmp_path: Path) -> tuple[GaicCompositionOnnx, FakeSession]:
         session_factory=lambda *_args, **_kwargs: session,
     )
     return model, session
+
+
+def test_injected_session_does_not_require_optional_onnxruntime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_import = builtins.__import__
+
+    def import_without_onnxruntime(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "onnxruntime":
+            raise ModuleNotFoundError("onnxruntime is intentionally unavailable")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_onnxruntime)
+    model, _session = _fake_model(tmp_path)
+
+    assert model.runtime_version == "injected"
 
 
 def test_crop_coordinates_snap_to_reference_pixel_rounding() -> None:

@@ -6,7 +6,7 @@ Updated: 2026-10-22
 
 - Stable integration branch: `develop`, at merge commit `9192f6d` after PR #24.
 - Most recent merged PR: [#24, SAM and ViTMatte subject protection](https://github.com/luckylca/LeicaShot/pull/24); all six macOS/Ubuntu/Windows Python 3.11/3.13 CI jobs passed.
-- Active branch: `feat/gaic-composition-integration`; this branch adds GAIC export/inference, shared-engine suggestion and crop APIs, CLI, tests, and real-photo/reference evidence. PR is not yet opened.
+- Active branch: `feat/gaic-composition-integration`; PR [#25](https://github.com/luckylca/LeicaShot/pull/25) adds GAIC export/inference, shared-engine suggestion and crop APIs, CLI, tests, and real-photo/reference evidence. Initial CI found five mock-session tests incorrectly importing the optional ONNX Runtime dependency; a follow-up fix is being validated.
 - Python production path only. Android is used only with `adb -s a4976c80` for reference Kotlin comparisons; the temporary comparison APK has a separate application ID, and the user's installed reference app was left intact.
 - The working GAIC checkpoint and ONNX export are local under `/tmp/laika-models/gaic`; neither is in Git.
 
@@ -51,4 +51,4 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Next action
 
-Finish full test and CI checks for `feat/gaic-composition-integration`, open and squash-merge its PR, then immediately begin `feat/fastapi-task-service`. API task requests should pass selected GAIC crops to `ProcessingOptions` and preserve the separate crop-only operation so an already processed image is not sent through AI again. Continue optical-scatter CPU profiling, full-resolution runs, and Linux cgroup memory measurements alongside the API/Web work.
+Finish all platform CI checks for PR #25 and squash-merge it to `develop`, then immediately begin `feat/fastapi-task-service`. API task requests should pass selected GAIC crops to `ProcessingOptions` and preserve the separate crop-only operation so an already processed image is not sent through AI again. Continue optical-scatter CPU profiling, full-resolution runs, and Linux cgroup memory measurements alongside the API/Web work.

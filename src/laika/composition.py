@@ -358,20 +358,28 @@ class GaicCompositionOnnx:
             raise CompositionInferenceError("GAIC ONNX SHA-256 does not match")
         self.model_sha256 = actual
         self.intra_op_num_threads = intra_op_num_threads
-        try:
-            import onnxruntime as ort
-        except ImportError as exc:  # pragma: no cover - optional runtime
-            raise CompositionInferenceError(
-                "GAIC inference requires ONNX Runtime; install the inference extra"
-            ) from exc
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = intra_op_num_threads
-        options.inter_op_num_threads = 1
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        options.enable_cpu_mem_arena = False
-        options.enable_mem_pattern = False
-        factory = session_factory or ort.InferenceSession
+        ort: Any | None = None
+        if session_factory is None:
+            try:
+                import onnxruntime as ort_module
+            except ImportError as exc:  # pragma: no cover - optional runtime
+                raise CompositionInferenceError(
+                    "GAIC inference requires ONNX Runtime; install the inference extra"
+                ) from exc
+            ort = ort_module
+            options = ort.SessionOptions()
+            options.intra_op_num_threads = intra_op_num_threads
+            options.inter_op_num_threads = 1
+            options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            options.enable_cpu_mem_arena = False
+            options.enable_mem_pattern = False
+            factory = ort.InferenceSession
+        else:
+            # Injected sessions keep the graph contract testable in the dev
+            # dependency set without requiring the optional inference extra.
+            options = None
+            factory = session_factory
         try:
             self._session = factory(
                 str(self.model_path),
@@ -382,7 +390,7 @@ class GaicCompositionOnnx:
             raise CompositionInferenceError(
                 f"cannot load GAIC ONNX graph: {exc}"
             ) from exc
-        self.runtime_version = ort.__version__
+        self.runtime_version = ort.__version__ if ort is not None else "injected"
         self.provider = "CPUExecutionProvider"
         self._inference_lock = threading.RLock()
         self._run_options_lock = threading.RLock()
