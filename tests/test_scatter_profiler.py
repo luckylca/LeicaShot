@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-import time
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -156,21 +156,35 @@ def test_process_tree_peak_flushes_periodic_stage_and_cgroup_telemetry(
             return []
 
     monkeypatch.setattr(module.psutil, "Process", FakeProcess)
-    stream = io.StringIO()
+
+    class TelemetryStream(io.StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.memory_sample_written = threading.Event()
+
+        def write(self, value: str) -> int:
+            result = super().write(value)
+            if '"record_type": "memory_sample"' in value:
+                self.memory_sample_written.set()
+            return result
+
+    stream = TelemetryStream()
     progress = SimpleNamespace(
         fraction=0.5,
         elapsed_seconds=2.0,
         details={"component": "arnet_tile"},
     )
 
-    with module.ProcessTreePeak(
+    peak = module.ProcessTreePeak(
         interval_seconds=0.001,
         telemetry_stream=stream,
         cgroup_snapshot=lambda: {"current_bytes": 6144, "peak_bytes": 8192},
         telemetry_interval_seconds=0.003,
-    ) as peak:
+    )
+    peak.set_stage("bokeh.arnet_tile")
+    with peak:
         peak._progress_record(progress, "bokeh.arnet_tile")
-        time.sleep(0.012)
+        assert stream.memory_sample_written.wait(timeout=1.0)
 
     records = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert any(record["record_type"] == "progress" for record in records)
