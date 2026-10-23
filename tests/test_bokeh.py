@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -483,6 +484,57 @@ def test_balanced_bokeh_keeps_eager_radiance_and_matches_low_memory(
     np.testing.assert_array_equal(low_memory.rgb, balanced.rgb)
     assert low_memory.stage_seconds["highlight_radiance"] > 0.0
     assert balanced.stage_seconds["highlight_radiance"] == 0.0
+
+
+def test_highlight_radiance_is_released_before_softening(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    radiance_ref: weakref.ReferenceType[np.ndarray] | None = None
+    extract_radiance = highlights.extract_highlight_radiance
+    soften = highlights.soften_highlights_inplace
+
+    def capture_radiance(*args: Any, **kwargs: Any) -> np.ndarray:
+        nonlocal radiance_ref
+        radiance = extract_radiance(*args, **kwargs)
+        radiance_ref = weakref.ref(radiance)
+        return radiance
+
+    def assert_source_released(
+        scattered: np.ndarray,
+        coc: np.ndarray,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        assert radiance_ref is not None
+        assert radiance_ref() is None
+        return soften(scattered, coc, **kwargs)
+
+    monkeypatch.setattr(highlights, "extract_highlight_radiance", capture_radiance)
+    monkeypatch.setattr(highlights, "soften_highlights_inplace", assert_source_released)
+
+    class IdentityModel:
+        strategy = "low-memory"
+
+        def infer(self, rgb: np.ndarray, defocus: np.ndarray) -> Any:
+            height, width = rgb.shape[:2]
+            return SimpleNamespace(
+                rgb_nchw=rgb.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+            )
+
+    rgb = np.zeros((192, 192, 3), dtype=np.uint8)
+    rgb[94:98, 94:98] = (255, 220, 160)
+    depth = np.full((192, 192), 0.8, dtype=np.float32)
+
+    result = render_bokeh(
+        rgb,
+        depth,
+        0.1,
+        2.8,
+        IdentityModel(),
+        row_chunk_height=17,
+    )
+
+    assert result.rgb.shape == rgb.shape
+    assert radiance_ref is not None and radiance_ref() is None
 
 
 def test_explicit_rgb_resize_uses_opencv_cubic_and_keeps_rgb_order() -> None:

@@ -917,6 +917,10 @@ def render_bokeh(
     stage_seconds["highlight_extraction"] = time.perf_counter() - stage_started
     base_rgb = split.base_rgb
     highlight_linear: Any | None = split.highlight_linear
+    # Keep the owned arrays directly, not through the split holder. In
+    # low-memory mode that holder only owns base_rgb; in balanced mode it
+    # would otherwise keep a second reference to the full float32 radiance.
+    del split
     if stage_callback is not None:
         stage_callback("highlight-extraction", 1.0)
 
@@ -1140,6 +1144,11 @@ def render_bokeh(
             cancel_check=cancel_check,
             progress_callback=on_scatter_progress,
         )
+        # Scatter has consumed the source radiance and returned an independent
+        # output. Release the full-resolution HWC float32 input before the
+        # following softening and composite stages allocate their work buffers.
+        del highlight_linear
+        highlight_linear = None
         stage_seconds["highlight_scatter"] = time.perf_counter() - stage_started
         if stage_callback is not None:
             stage_callback("highlight-softening", 0.0)
@@ -1181,7 +1190,7 @@ def render_bokeh(
             cancel_check=cancel_check,
         )
         stage_seconds["subject_composite"] = time.perf_counter() - composite_started
-    del coc, split, base_rgb, highlight_linear
+    del coc, base_rgb, highlight_linear
     if cancel_check is not None:
         cancel_check()
     return BokehRenderResult(
