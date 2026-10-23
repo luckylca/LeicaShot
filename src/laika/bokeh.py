@@ -974,6 +974,10 @@ def render_bokeh(
                 (pass_width, pass_height),
                 interpolation=cv2.INTER_AREA,
             )
+            # Area downsampling can round normalized float32 sRGB just beyond
+            # the ARNet input interval. Keep each resized pass in contract
+            # without allocating a second image-sized buffer.
+            np.clip(small_rgb, np.float32(0.0), np.float32(1.0), out=small_rgb)
         if (pass_width, pass_height) == (width, height):
             small_coc = plate_coc
         else:

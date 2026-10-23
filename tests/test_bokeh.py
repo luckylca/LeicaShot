@@ -439,7 +439,31 @@ def test_bokeh_renderer_integrates_highlight_scatter_after_arnet() -> None:
 def test_bokeh_clamps_subject_plate_float_roundoff_before_arnet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import cv2
+
     import laika.protection as protection
+
+    original_resize = cv2.resize
+    resize_injections: list[tuple[int, int]] = []
+
+    def resize_with_float32_roundoff(
+        image: np.ndarray,
+        size: tuple[int, int],
+        *args: Any,
+        **kwargs: Any,
+    ) -> np.ndarray:
+        result = original_resize(image, size, *args, **kwargs)
+        if (
+            image.dtype == np.float32
+            and image.ndim == 3
+            and image.shape[2] == 3
+            and kwargs.get("interpolation") == cv2.INTER_AREA
+        ):
+            result[0, 0, 0] = np.nextafter(np.float32(1.0), np.float32(np.inf))
+            resize_injections.append(size)
+        return result
+
+    monkeypatch.setattr(cv2, "resize", resize_with_float32_roundoff)
 
     def fill_with_float32_roundoff(
         image_float: np.ndarray,
@@ -467,19 +491,21 @@ def test_bokeh_clamps_subject_plate_float_roundoff_before_arnet(
             assert defocus.shape == (height, width)
             return SimpleNamespace(rgb_nchw=rgb.transpose(2, 0, 1)[None].copy())
 
-    rgb = np.full((64, 80, 3), 255, dtype=np.uint8)
-    depth = np.full((64, 80), 0.8, dtype=np.float32)
-    alpha = np.zeros((64, 80), dtype=np.float32)
+    rgb = np.full((500, 700, 3), 255, dtype=np.uint8)
+    depth_row = np.linspace(0.0, 1.0, 500, dtype=np.float32)[:, None]
+    depth = np.broadcast_to(depth_row, (500, 700)).copy()
+    alpha = np.zeros((500, 700), dtype=np.float32)
     result = render_bokeh(
         rgb,
         depth,
         0.5,
-        2.8,
+        0.95,
         StrictRGBModel(),
         subject_alpha=alpha,
     )
 
     assert result.rgb.shape == rgb.shape
+    assert resize_injections
 
 
 def test_balanced_bokeh_keeps_eager_radiance_and_matches_low_memory(
