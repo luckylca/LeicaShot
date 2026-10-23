@@ -294,3 +294,14 @@
 - A second 512-tile control was OOM-killed in ARNet after 277.788 s. The initial 512 run had completed but reached the 2,147,483,648 B cgroup cap. Since this is run-to-run variability, the successful 256 run is a headroom improvement, not a stable 2 GiB support claim.
 - Added strategy-based tile selection: Low Memory defaults to 256 and Balanced to 512; explicit tile overrides remain available. Full timings and memory interpretation are in the [headroom report](benchmarks/arnet-tile-headroom-2g-2026-10-24.md).
 - Validation passed locally: 208 Python tests, Ruff lint, Ruff format check, and `git diff --check`. The full CI matrix is pending on the feature PR.
+
+## 2026-10-24 — ARNet tile-edge PR #58 merged
+
+- Squash-merged [PR #58](https://github.com/luckylca/LeicaShot/pull/58) as `9f973f0` after all eight required CI checks passed. Low Memory selects 256-pixel ARNet tiles, Balanced selects 512, and an explicit tile override remains supported.
+- Started `perf/arnet-stage-buffer-lifetimes` from the merged `develop` commit. The first 2 GiB and 3 GiB benchmark containers were missing `PYTHONPATH=/opt/laika-src/src`, so they imported the image's installed package and did not evaluate the candidate. A corrected source-explicit no-swap 3 GiB run is now underway; its full-resolution result hash and peak telemetry will decide whether deferred highlight radiance is retained.
+
+## 2026-10-24 — Benchmark source provenance PR #59 merged
+
+- Squash-merged [PR #59](https://github.com/luckylca/LeicaShot/pull/59) as `acab2d5` after all eight required CI checks passed. The full-pipeline harness now inserts the checked-out `src/` before installed packages, rejects imports outside that tree, and records its source tree hash, Git revision, and dirty state.
+- Corrected the active ARNet lifetime experiment to import `/opt/laika-src/src` explicitly. Its 5760×3840 five-model 3 GiB CPU task completed in 1,484.881 s with byte-identical output SHA `0a6282df408319950f0bd4c8f56bcfce78ed9e7eba95ce9c50b2c70f5555ade2`, process-tree peak 1,870,557,184 B, and cgroup peak 2,289,954,816 B. A same-host 2 GiB A/B against eager `develop` also completed with exact output parity: process-tree RSS fell 139,522,048 B, one-second cgroup current fell 105,459,712 B, exact cgroup peak fell 1,875,968 B, and cgroup max events fell 190→0. The candidate had only 1.8 MB headroom, so 2 GiB remains an experimental challenge. Balanced retains eager extraction after an exact-output strategy test. Full results: [deferred-radiance A/B report](benchmarks/arnet-deferred-radiance-2g-2026-10-24.md).
+- Next branch after merging this work: `perf/highlight-radiance-lifetime`. Release the float32 radiance buffer immediately after scatter, before softening/composite, then repeat native-size 2 GiB A/B before assessing further savings.

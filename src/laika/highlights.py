@@ -29,10 +29,10 @@ _APERTURES = (0.95, 1.8, 2.0, 2.8, 4.0, 5.6)
 
 @dataclass(frozen=True)
 class HighlightSplit:
-    """Opaque sRGB base plus nonnegative, linear-RGB highlight radiance."""
+    """Opaque sRGB base plus optional linear-RGB highlight radiance."""
 
     base_rgb: Any
-    highlight_linear: Any
+    highlight_linear: Any | None
 
 
 def _check(cancel_check: Callable[[], None] | None) -> None:
@@ -84,6 +84,7 @@ def extract_highlights(
     *,
     cancel_check: Callable[[], None] | None = None,
     row_chunk_height: int = 128,
+    include_radiance: bool = True,
 ) -> HighlightSplit:
     """Split a photo as the reference does, retaining diffuse bright surfaces.
 
@@ -190,7 +191,7 @@ def extract_highlights(
         del labels, stats, candidate
 
     base = np.empty_like(image)
-    high = np.empty(image.shape, dtype=np.float32)
+    high = np.empty(image.shape, dtype=np.float32) if include_radiance else None
     for row_start in range(0, height, row_chunk_height):
         _check(cancel_check)
         row_stop = min(height, row_start + row_chunk_height)
@@ -214,17 +215,63 @@ def extract_highlights(
             ) - np.float32(0.055)
             np.rint(np.clip(linear_to_srgb, 0.0, 1.0) * 255.0, out=linear_to_srgb)
             base[row_start:row_stop, :, channel] = linear_to_srgb.astype(np.uint8)
-            high[row_start:row_stop, :, channel] = np.maximum(
-                np.float32(0.0),
-                _LINEAR[region[:, :, channel]]
-                - _LINEAR[base[row_start:row_stop, :, channel]],
-            )
+            if high is not None:
+                high[row_start:row_stop, :, channel] = np.maximum(
+                    np.float32(0.0),
+                    _LINEAR[region[:, :, channel]]
+                    - _LINEAR[base[row_start:row_stop, :, channel]],
+                )
             del linear, linear_to_srgb
         del ratio
 
     _check(cancel_check)
     assert peak.size == count
     return HighlightSplit(base, high)
+
+
+def extract_highlight_radiance(
+    rgb: Any,
+    base_rgb: Any,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+    progress_callback: Callable[[float], None] | None = None,
+    row_chunk_height: int = 128,
+) -> Any:
+    """Build the exact linear highlight residual after the base plate exists."""
+    image = np.asarray(rgb)
+    base = np.asarray(base_rgb)
+    if (
+        image.dtype != np.uint8
+        or image.ndim != 3
+        or image.shape[2] != 3
+        or not image.flags.c_contiguous
+        or base.dtype != np.uint8
+        or base.shape != image.shape
+        or not base.flags.c_contiguous
+    ):
+        raise ValueError("rgb and base_rgb must be matching contiguous HWC uint8 RGB")
+    if row_chunk_height < 1:
+        raise ValueError("row_chunk_height must be positive")
+
+    height, width = image.shape[:2]
+    high = np.empty((height, width, 3), dtype=np.float32)
+    for row_start in range(0, height, row_chunk_height):
+        _check(cancel_check)
+        row_stop = min(height, row_start + row_chunk_height)
+        for channel in range(3):
+            source_linear = _LINEAR[image[row_start:row_stop, :, channel]]
+            base_linear = _LINEAR[base[row_start:row_stop, :, channel]]
+            difference = source_linear - base_linear
+            np.maximum(
+                np.float32(0.0),
+                difference,
+                out=high[row_start:row_stop, :, channel],
+            )
+            del source_linear, base_linear, difference
+        if progress_callback is not None:
+            progress_callback(row_stop / height)
+    _check(cancel_check)
+    return high
 
 
 def aperture_kernel(radius: int, aperture: float) -> Any:

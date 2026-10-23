@@ -897,12 +897,14 @@ def render_bokeh(
 
     from laika.highlights import (
         composite_highlights,
+        extract_highlight_radiance,
         extract_highlights,
         recover_clipped_highlights_inplace,
         scatter_highlights,
         soften_highlights_inplace,
     )
 
+    defer_highlight_radiance = getattr(model, "strategy", "low-memory") == "low-memory"
     if stage_callback is not None:
         stage_callback("highlight-extraction", 0.0)
     stage_started = time.perf_counter()
@@ -910,10 +912,11 @@ def render_bokeh(
         image,
         cancel_check=cancel_check,
         row_chunk_height=row_chunk_height,
+        include_radiance=not defer_highlight_radiance,
     )
     stage_seconds["highlight_extraction"] = time.perf_counter() - stage_started
     base_rgb = split.base_rgb
-    highlight_linear = split.highlight_linear
+    highlight_linear: Any | None = split.highlight_linear
     if stage_callback is not None:
         stage_callback("highlight-extraction", 1.0)
 
@@ -1085,6 +1088,28 @@ def render_bokeh(
     release_started = time.perf_counter()
     del image_float, composite, enlarged, plate_coc
     stage_seconds["release_arnet_buffers"] = time.perf_counter() - release_started
+    if highlight_linear is None:
+        if stage_callback is not None:
+            stage_callback("highlight-radiance", 0.0)
+        stage_started = time.perf_counter()
+
+        def on_radiance_progress(fraction: float) -> None:
+            if stage_callback is not None:
+                stage_callback("highlight-radiance", fraction)
+
+        highlight_linear = extract_highlight_radiance(
+            image,
+            base_rgb,
+            cancel_check=cancel_check,
+            progress_callback=(
+                on_radiance_progress if stage_callback is not None else None
+            ),
+            row_chunk_height=row_chunk_height,
+        )
+        stage_seconds["highlight_radiance"] = time.perf_counter() - stage_started
+    else:
+        # Balanced already built this buffer alongside the base plate.
+        stage_seconds["highlight_radiance"] = 0.0
     if bool(np.any(highlight_linear)):
         if stage_callback is not None:
             stage_callback("highlight-recovery", 0.0)
