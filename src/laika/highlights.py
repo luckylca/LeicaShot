@@ -406,6 +406,7 @@ def _scatter_field_optical(
     progress_callback: Callable[[float], None] | None,
     *,
     skip_empty_mass: bool = True,
+    mass_filter_float32: bool = False,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -430,6 +431,16 @@ def _scatter_field_optical(
             kernels = [zero_kernel] * len(nodes)
         else:
             kernels = _field_pupil_kernels(pupil_shapes, radius, aperture)
+        if mass_filter_float32:
+            mass_kernel_cache: dict[int, Any] = {}
+            mass_kernels = []
+            for kernel in kernels:
+                kernel_id = id(kernel)
+                if kernel_id not in mass_kernel_cache:
+                    mass_kernel_cache[kernel_id] = kernel.astype(np.float32)
+                mass_kernels.append(mass_kernel_cache[kernel_id])
+        else:
+            mass_kernels = kernels
         for out_y0 in range(0, height, row_chunk_height):
             _check(cancel_check)
             out_y1 = min(height, out_y0 + row_chunk_height)
@@ -437,7 +448,9 @@ def _scatter_field_optical(
             mass_total = np.zeros((row_count, width), dtype=np.float64)
             radiance_total = np.zeros((row_count, width, 3), dtype=np.float64)
 
-            for node, kernel in zip(nodes, kernels, strict=True):
+            for node, kernel, mass_kernel in zip(
+                nodes, kernels, mass_kernels, strict=True
+            ):
                 _, _, wx, wy, x0, x1, node_y0, node_y1, _ = node
                 y0 = max(out_y0, node_y0)
                 y1 = min(out_y1, node_y1)
@@ -461,9 +474,11 @@ def _scatter_field_optical(
                     weighted = np.empty(source_high.shape, dtype=np.float64)
                     np.multiply(source_high, layer_weight[:, :, None], out=weighted)
                 mass = cv2.filter2D(
-                    layer_weight.astype(np.float64),
-                    ddepth=cv2.CV_64F,
-                    kernel=kernel,
+                    layer_weight
+                    if mass_filter_float32
+                    else layer_weight.astype(np.float64),
+                    ddepth=cv2.CV_32F if mass_filter_float32 else cv2.CV_64F,
+                    kernel=mass_kernel,
                     borderType=cv2.BORDER_REFLECT_101,
                 )
                 node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]

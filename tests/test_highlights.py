@@ -208,6 +208,34 @@ def test_field_optical_scatter_chunk_sizes_preserve_composited_pixels() -> None:
         )
 
 
+def test_fp32_mass_convolution_preserves_quantized_highlight_composite() -> None:
+    rng = np.random.default_rng(8842)
+    high = np.zeros((73, 81, 3), dtype=np.float32)
+    for _ in range(24):
+        y = int(rng.integers(0, high.shape[0]))
+        x = int(rng.integers(0, high.shape[1]))
+        high[y, x] = rng.random(3, dtype=np.float32)
+    coc = rng.uniform(-1.0, 1.0, size=high.shape[:2]).astype(np.float32)
+    levels = highlights._source_levels(coc, 3.0, None)
+    reference = highlights._scatter_field_optical(
+        high, coc, 2.8, 3.0, 256, levels, None, None, mass_filter_float32=False
+    )
+    candidate = highlights._scatter_field_optical(
+        high, coc, 2.8, 3.0, 256, levels, None, None, mass_filter_float32=True
+    )
+    default = highlights._scatter_field_optical(
+        high, coc, 2.8, 3.0, 256, levels, None, None
+    )
+
+    np.testing.assert_allclose(candidate, reference, rtol=0.0, atol=1e-6)
+    np.testing.assert_array_equal(default, reference)
+    base = rng.integers(0, 256, size=(*high.shape[:2], 3), dtype=np.uint8)
+    np.testing.assert_array_equal(
+        highlights.composite_highlights(base, base, candidate),
+        highlights.composite_highlights(base, base, reference),
+    )
+
+
 @pytest.mark.parametrize("has_highlight", [False, True])
 def test_field_optics_skips_rgb_filter_only_for_empty_layer_radiance(
     monkeypatch: pytest.MonkeyPatch, has_highlight: bool

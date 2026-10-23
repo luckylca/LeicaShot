@@ -4,9 +4,9 @@ Updated: 2026-10-23
 
 ## Current checkpoint
 
-- Stable integration branch: `develop`, at merge commit `d51a65e` after PR #45.
-- Most recent merged PR: [#45, measure full-pipeline CPU thread scaling](https://github.com/luckylca/LeicaShot/pull/45); all eight required CI jobs passed.
-- Active branch: `perf/scatter-row-chunk-256`, based on `develop` at `d51a65e`. Two native 5760×3840 256-row runs measured highlight scatter at 1,016.780 s and 1,096.835 s, averaging 1,056.807 s (−16.92% vs 128 rows). The 512-row trial was 1,028.462 s. All four tested outputs (128, 256 twice, 512) are byte-identical. Both 256-row cgroup peaks (2,802,565,120 and 2,713,399,296 B) were below the 128-row peak, with no OOM/limit events. This branch updates the engine/API/CLI default to 256 while retaining explicit configurability. See the [row-chunk report](benchmarks/scatter-row-chunk-256-native-4g-2026-10-23.md).
+- Stable integration branch: `develop`, at merge commit `f7e91d4` after PR #46.
+- Most recent merged PR: [#46, measured 256-row Bokeh chunks](https://github.com/luckylca/LeicaShot/pull/46); all eight required CI jobs passed.
+- Active branch: `perf/nonzero-mass-filtering`, based on `develop` at `f7e91d4`. PR #46’s two native 5760×3840 256-row runs averaged 1,056.807 s highlight scatter with byte-identical outputs. FP32 mass convolution was screened in two source-loaded production runs under a 4 GiB cgroup: mean scatter was 1,088.464 s and task time 1,397.691 s, compared with a same-source FP64 control at 984.026 s and 1,305.825 s. All three outputs were byte-identical, but FP32 demonstrated no performance or memory gain. Production defaults to FP64; FP32 is available only as an explicit profiling experiment. See the [mass-filter report](benchmarks/nonzero-mass-fp32-native-4g-2026-10-23.md) and [row-chunk report](benchmarks/scatter-row-chunk-256-native-4g-2026-10-23.md).
 - PR #45's full-resolution two-thread task completed in 1,529.419 s versus PR #44's one-thread 1,569.613 s (−2.56%); scatter was 1.50% faster. cgroup peak was 2,830,872,576 B with zero OOM events. One output channel value differed by one LSB (MAE 1.507e−8, max 1); retain one thread as Low Memory default. See the [thread scaling report](benchmarks/cpu-thread-scaling-native-4g-2026-10-23.md).
 - A screening trial of replacing `BORDER_REFLECT_101` with `BORDER_CONSTANT` found identical final uint8 composite pixels on a 512×384 fixture, but 1024×768 scatter ran about 0.4% slower and the raw float32 arrays differed below 1e−16. No native-size test is planned for this lower-value candidate.
 - PR #44's full-resolution A/B on the same five-model 5760×3840 CPU task: 2,798.908 s / 2,896,424,960 B cgroup peak with the exact-zero skip disabled; 1,569.613 s / 2,844,807,168 B with it enabled. Scatter time fell 48.92%, 32,718 zero-input mass filters were avoided, outputs were byte-identical, and both cgroups recorded zero OOM/limit events. See the [A/B report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
@@ -93,4 +93,4 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Next action
 
-Run the complete test suite/Ruff checks, commit and push the measured 256-row default change, then open PR #46 and wait for all CI. After merge, immediately start a separate branch to profile/optimize the remaining nonzero depth-layer mass filters; the next experiment must use exact-output comparison and a measured native-resolution cgroup run.
+Run full tests and Ruff for the screened FP32 experiment; keep FP64 as the production default and merge the benchmark evidence only after CI. Afterward, immediately start a separate branch to profile another exact-output implementation for the remaining nonzero mass-filter bottleneck.
