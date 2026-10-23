@@ -272,3 +272,10 @@
 - Real M9/depth ARNet tensor at 1440×960 matched bitwise between full-frame and six 512×512 cores with a 16-pixel halo (max and mean absolute error 0, same SHA-256).
 - A native 5760×3840 M9 + Depth + ARNet/highlight CPU task completed in a no-swap 2 GiB cgroup in 1,409.220 s, with 1,824,636,928 B process-tree peak RSS, 2,029,903,872 B cgroup peak, zero OOM/limit events, and a byte-identical output hash. It did not include SAM, ViTMatte or subject protection. The 2 GiB subject-enabled task remains unverified. See the [ARNet threshold report](benchmarks/arnet-pass-peak-2g-2026-10-23.md).
 - Local targeted suite passed 17 Bokeh tests before the full pipeline run. After the full run, all 206 local tests passed; Ruff lint, Ruff format check, and `git diff --check` passed. Remote CI is pending on this branch.
+
+## 2026-10-24 — In-place highlight scatter accumulation
+
+- Synced `develop` at PR #55 (`bc9cd35`) and created `perf/highlight-scatter-cpu`. Changed the production float64 optical scatter route to multiply mass and radiance filter-output ROIs in place before accumulation. Non-float64 experimental mass routes retain their prior expression.
+- Ran the complete 5760×3840 M9 + Depth + ARNet/highlights task in the same Linux ARM64 guest, one-thread CPU configuration, identical model/input hashes, and no-swap 2 GiB cgroup as the PR #55 baseline.
+- Baseline/candidate produced identical 16,621,497-byte PNGs with SHA-256 `62bf1f9b29a93e15435d5f38eb9975d5e910ca773fc5eb4e6de43b16a8ca1aef`. Scatter was 1,108.614/905.330 s (−18.34%); whole task 1,409.220/1,173.245 s (−16.75%). Candidate process-tree peak RSS was 1,830,719,488 B (baseline 1,824,636,928 B); cgroup peak was 2,015,240,192 B (baseline 2,029,903,872 B), with zero OOM events in both runs. This is one pair, not an RSS-reduction claim or general performance guarantee.
+- Added an arithmetic parity unit test and a reproducible report. Validation passed: 207 Python tests, Ruff lint, Ruff format check, four Web tests, and Web production build. Remote CI is pending. See [the scatter report](benchmarks/highlight-scatter-inplace-accumulation-2g-2026-10-24.md).

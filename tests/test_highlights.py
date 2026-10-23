@@ -236,6 +236,23 @@ def test_fp32_mass_convolution_preserves_quantized_highlight_composite() -> None
     )
 
 
+def test_inplace_field_weight_multiplication_matches_allocating_expression() -> None:
+    rng = np.random.default_rng(1809)
+    weights = rng.random((31, 37), dtype=np.float64)
+    mass = rng.random((31, 37), dtype=np.float64)
+    radiance = rng.random((31, 37, 3), dtype=np.float64)
+    expected_mass = mass * weights
+    expected_radiance = radiance * weights[:, :, None]
+
+    actual_mass = mass.copy()
+    actual_radiance = radiance.copy()
+    np.multiply(actual_mass, weights, out=actual_mass)
+    np.multiply(actual_radiance, weights[:, :, None], out=actual_radiance)
+
+    np.testing.assert_array_equal(actual_mass, expected_mass)
+    np.testing.assert_array_equal(actual_radiance, expected_radiance)
+
+
 def test_fft32_outer_mass_filter_preserves_quantized_highlight_composite() -> None:
     rng = np.random.default_rng(314159)
     high = np.zeros((73, 81, 3), dtype=np.float32)
