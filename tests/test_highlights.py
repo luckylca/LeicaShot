@@ -185,6 +185,29 @@ def test_field_optics_skips_zero_mass_filters_without_changing_output(
     assert zero_mass_calls == []
 
 
+def test_field_optical_scatter_chunk_sizes_preserve_composited_pixels() -> None:
+    rng = np.random.default_rng(2081)
+    high = np.zeros((57, 61, 3), dtype=np.float32)
+    high[9, 14] = (0.7, 0.4, 0.2)
+    high[43, 48] = (0.2, 0.5, 0.8)
+    coc = rng.uniform(-1.5, 1.5, size=(57, 61)).astype(np.float32)
+    levels = highlights._source_levels(coc, 3.0, None)
+    expected = highlights._scatter_field_optical(
+        high, coc, 2.8, 3.0, 19, levels, None, None
+    )
+
+    for chunk_height in (128, 256, 512):
+        actual = highlights._scatter_field_optical(
+            high, coc, 2.8, 3.0, chunk_height, levels, None, None
+        )
+        np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
+        base = np.full((57, 61, 3), 128, dtype=np.uint8)
+        np.testing.assert_array_equal(
+            highlights.composite_highlights(base, base, actual),
+            highlights.composite_highlights(base, base, expected),
+        )
+
+
 @pytest.mark.parametrize("has_highlight", [False, True])
 def test_field_optics_skips_rgb_filter_only_for_empty_layer_radiance(
     monkeypatch: pytest.MonkeyPatch, has_highlight: bool

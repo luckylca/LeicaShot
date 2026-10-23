@@ -185,7 +185,7 @@ def main() -> int:
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
     parser.add_argument("--matte-tile-size", type=int, default=512)
-    parser.add_argument("--bokeh-row-chunk-height", type=int, default=128)
+    parser.add_argument("--bokeh-row-chunk-height", type=int, default=256)
     parser.add_argument("--subject-point", type=_point, action="append")
     parser.add_argument(
         "--threads",

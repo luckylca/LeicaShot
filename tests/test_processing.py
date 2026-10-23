@@ -550,6 +550,7 @@ def test_engine_requires_only_the_models_used_by_selected_mode(tmp_path: Path) -
 
 
 def test_processing_options_reject_implicit_upscale_and_invalid_controls() -> None:
+    assert ProcessingOptions().bokeh_row_chunk_height == 256
     with pytest.raises(ValueError, match="aperture"):
         ProcessingOptions(aperture=3.2)
     with pytest.raises(ValueError, match="focus"):

@@ -143,6 +143,12 @@ def _settings(storage: Path, **kwargs: Any) -> ApiSettings:
     return ApiSettings(**values)
 
 
+def test_task_options_default_to_the_measured_bokeh_chunk(tmp_path: Path) -> None:
+    options = TaskOptions().to_processing_options(_settings(tmp_path / "tasks"))
+
+    assert options.bokeh_row_chunk_height == 256
+
+
 def _submit(client: TestClient, image: bytes, options: dict[str, Any] | None = None):
     return client.post(
         "/api/v1/tasks",

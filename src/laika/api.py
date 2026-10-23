@@ -269,7 +269,7 @@ class TaskOptions(BaseModel):
     subject_points: list[tuple[float, float]] = Field(default_factory=list)
     matte_tile_size: Literal[512, 768, 1024] = 1024
     m9_row_chunk_height: int = Field(default=512, ge=1)
-    bokeh_row_chunk_height: int = Field(default=128, ge=1)
+    bokeh_row_chunk_height: int = Field(default=256, ge=1)
 
     @field_validator("aperture")
     @classmethod

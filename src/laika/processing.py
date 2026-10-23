@@ -60,7 +60,7 @@ class ProcessingOptions:
     max_pixels: int = 40_000_000
     max_network_pixels: int = 4_000_000
     m9_row_chunk_height: int = 512
-    bokeh_row_chunk_height: int = 128
+    bokeh_row_chunk_height: int = 256
     subject_points: tuple[tuple[float, float], ...] = ()
     matte_tile_size: int = 1024
     crop: CompositionCrop | None = None

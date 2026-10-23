@@ -75,7 +75,7 @@ def main() -> int:
     parser.add_argument("--focus-x", type=float, default=0.5)
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
-    parser.add_argument("--row-chunk-height", type=int, default=128)
+    parser.add_argument("--row-chunk-height", type=int, default=256)
     parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args()
     if min(args.long_edge, args.row_chunk_height, args.repeat) < 1:

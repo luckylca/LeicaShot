@@ -785,7 +785,7 @@ def render_bokeh(
     model: BokehMeARNet,
     *,
     subject_alpha: Any | None = None,
-    row_chunk_height: int = 128,
+    row_chunk_height: int = 256,
     cancel_check: Callable[[], None] | None = None,
     pass_callback: Callable[[int, int, float], None] | None = None,
     tile_progress_callback: Callable[[int, int, BokehTileProgress], None] | None = None,
