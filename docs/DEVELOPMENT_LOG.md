@@ -332,3 +332,9 @@
 - Its process-tree peak was 1,940,873,216 B, with the same high-water in highlight scatter; PR #62 recorded 1,724,833,792 B whole-task RSS and 1,659,846,656 B scatter-stage RSS. Exact cgroup peak reached the 2,147,483,648 B limit, sampled current came within 4,096 B of the cap, and `memory.events max` incremented 113 times. OOM counters remained zero.
 - Reverted candidate code commit `31906f0` as `d6b9bbf`. Local candidate validation had passed 214 tests and Ruff. The full configuration, model hashes, output verification and telemetry are in the [negative-result report](benchmarks/scatter-row-major-accumulators-rejected-2g-2026-10-24.md).
 - Next: merge this useful negative result as documentation, then start second-scene validation of PR #62 and profile the remaining nonzero mass-filter bottleneck.
+
+## 2026-10-24 — PR #63 merged; start second-scene verification
+
+- Squash-merged [PR #63](https://github.com/luckylca/LeicaShot/pull/63) as `b4cd18a` after all eight CI checks passed. It records the complete negative result for the rejected row-major scatter experiment; no candidate algorithm was merged.
+- Immediately created `test/highlight-scatter-second-scene` from updated `develop`.
+- Acquired a separate 5472×3648 CC0 portrait from [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Portrait_(CreativeCommons).jpg), outside the repository. SHA-256: `d237bbf13f886b69a376aad00836403dafdb8a6be0062dc98a50e1a6c7b32a48`. It has an ordinary JPEG orientation tag of 1 and includes hair edges, an outlined torso, railing and a bright city background. The next experiment compares the merged float32 workspace against its FP64 reference through the full Python pipeline.

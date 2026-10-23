@@ -69,7 +69,7 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 
 - Candidate `31906f0` moved the all-level loop inside the output row-band loop and retained the full-frame output while using row-local `own` and coverage arrays. The native full pipeline preserved its PNG hash but raised scatter-stage process-tree RSS by 281,026,560 B, raised exact cgroup peak to the 2 GiB hard limit (113 `max` events), and increased scatter time by 256.946 s. Whole-task time rose 17.47%.
 - The candidate was reverted by `d6b9bbf`; merged PR #62's level-major implementation remains active. Full environment and telemetry are in the [rejected experiment report](benchmarks/scatter-row-major-accumulators-rejected-2g-2026-10-24.md).
-- Next: validate PR #62 on another real scene, then profile nonzero mass-filter cost for a different CPU/memory approach.
+- Next-scene validation uses a separate CC0 portrait, 5472×3648, SHA-256 `d237bbf13f886b69a376aad00836403dafdb8a6be0062dc98a50e1a6c7b32a48` ([source and CC0 license](https://commons.wikimedia.org/wiki/File:Portrait_(CreativeCommons).jpg)). Compare the default float32 per-node radiance workspace against the existing float64 reference through the same CPU engine and cgroup. The image remains outside Git.
 
 ## Exact-zero highlight scatter optimization on `perf/highlight-scatter-cpu`
 
