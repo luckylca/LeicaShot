@@ -188,3 +188,9 @@ The same 5760×3840 CC0 source was processed in one `process_file()` call and on
 - The API completed in 4,167.105 s. The downloaded 16,655,520-byte 5760×3840 PNG hash (`0a6282df408319950f0bd4c8f56bcfce78ed9e7eba95ce9c50b2c70f5555ade2`) matches the direct-engine full-resolution subject result exactly.
 - Server process-tree peak RSS/USS were 2,809,442,304 / 2,794,074,112 B; cgroup peak was 3,075,403,776 B of 3,221,225,472 B (95.47%), with 145,821,696 B remaining and zero OOM/limit events. This is a successful single task with little headroom, not a robust 3 GiB service guarantee.
 - Highlight scatter took 3,720.483 s (89.3% of engine-reported time). The prior direct run took 2,650.138 s in scatter; the output matched exactly, but the timing delta is not controlled and is not attributed to API overhead. Full setup, stage results and reproduction command are in the [native-resolution API report](benchmarks/api-native-resolution-2026-10-23.md).
+
+## Native-resolution API at a 4 GiB task limit (2026-10-23)
+
+- A real HTTP upload, full model task, preview fetch, and native PNG download completed for the 5760×3840 source with M9, Depth, SAM, ViTMatte, ARNet and highlights on CPUExecutionProvider. The task ran in Low Memory mode with one API worker, one ONNX thread and a 4 GiB cgroup.
+- It took 3,562.790 s wall / 3,561.195 s engine time. Process-tree RSS/USS peaks were 2,655,535,104 / 2,640,166,912 B; cgroup peak was 3,027,701,760 B (70.49%) with zero OOM/limit events. The full PNG (5760×3840) is 16,655,520 B and byte-hash-identical to earlier source-verified outputs; the API preview is a separately downloaded 1600×1067 PNG.
+- Highlight scatter took 3,119.995 s (87.6% of engine time). This is the largest measured CPU stage. The faster result relative to the prior 3 GiB API run is not a controlled CPU comparison. See the [4 GiB API report](benchmarks/api-native-resolution-4g-2026-10-23.md).

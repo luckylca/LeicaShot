@@ -61,13 +61,15 @@ the cap), leaving only 87.9 MiB. Keep one worker for 3 GiB deployments. Raise
 concurrency only after measuring the complete model set and largest supported
 image sizes under the intended cgroup limit. See the [API concurrency report](benchmarks/api-concurrency-memory-2026-10-23.md).
 
-One 5760×3840 subject-protected API task did complete in a 3 GiB cgroup, but
-peaked at 3,075,403,776 B (95.47% of the cap) and left only 139.1 MiB. It took
-4,167 s on CPU, with highlight scatter accounting for 3,720 s. Treat this as a
-single-task completion result with little operating margin; retain one worker
-and prefer a larger memory limit for routine native-resolution service use.
-Do not run concurrent full-resolution jobs at a 3 GiB limit. See the [native
-resolution API report](benchmarks/api-native-resolution-2026-10-23.md).
+One 5760×3840 subject-protected API task completed in a 3 GiB cgroup, but
+peaked at 3,075,403,776 B (95.47% of the cap) and left only 139.1 MiB. A
+follow-up task in a 4 GiB cgroup peaked at 3,027,701,760 B (70.49%), fetched
+both the native PNG and 1600×1067 preview, and recorded no OOM or limit events.
+That task took 3,562.790 s on CPU, with highlight scatter accounting for
+3,119.995 s. These are individual-scene single-task measurements; retain one
+worker and do not run concurrent full-resolution jobs until they are measured
+under the intended memory limit. See the [3 GiB API report](benchmarks/api-native-resolution-2026-10-23.md)
+and [4 GiB API report](benchmarks/api-native-resolution-4g-2026-10-23.md).
 
 The 3 GiB configuration is not a general guarantee for every mode, source
 resolution, or scene. See [project status](PROJECT_STATUS.md) for current
