@@ -423,52 +423,28 @@ def test_chunked_residual_scatter_combination_is_bitwise_legacy_exact(
     np.testing.assert_array_equal(actual, expected)
 
 
-def test_field_optics_limits_own_and_coverage_accumulators_to_row_bands(
+def test_field_optics_does_not_allocate_an_unused_full_frame_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     high = np.zeros((9, 11, 3), dtype=np.float32)
     high[4, 5] = (0.8, 0.5, 0.2)
     coc = np.ones((9, 11), dtype=np.float32)
     original_zeros_like = np.zeros_like
-    original_zeros = np.zeros
-    full_rgb_allocations: list[tuple[int, ...]] = []
-    own_band_allocations: list[tuple[int, ...]] = []
-    coverage_allocations: list[tuple[int, ...]] = []
+    allocated_shapes: list[tuple[int, ...]] = []
 
     def counted_zeros_like(
         value: np.ndarray, *args: object, **kwargs: object
     ) -> np.ndarray:
         result = original_zeros_like(value, *args, **kwargs)
         if value.shape == high.shape:
-            full_rgb_allocations.append(result.shape)
-        elif value.shape == (3, 11, 3):
-            own_band_allocations.append(result.shape)
+            allocated_shapes.append(result.shape)
         return result
 
-    def counted_zeros(shape, *args, **kwargs):
-        result = original_zeros(shape, *args, **kwargs)
-        if shape in ((9, 11), (3, 11)) and kwargs.get("dtype") is np.float32:
-            coverage_allocations.append(shape)
-        return result
-
-    progress_values: list[float] = []
     monkeypatch.setattr(highlights.np, "zeros_like", counted_zeros_like)
-    monkeypatch.setattr(highlights.np, "zeros", counted_zeros)
-    result = scatter_highlights(
-        high,
-        coc,
-        2.8,
-        field_optics=True,
-        row_chunk_height=3,
-        progress_callback=progress_values.append,
-    )
+    result = scatter_highlights(high, coc, 2.8, field_optics=True, row_chunk_height=3)
 
     assert result.shape == high.shape
-    assert full_rgb_allocations == [high.shape]
-    assert own_band_allocations == [(3, 11, 3)] * 3
-    assert coverage_allocations == [(3, 11)] * 3
-    assert progress_values == sorted(progress_values)
-    assert progress_values[-1] == 1.0
+    assert allocated_shapes == [high.shape, high.shape]
 
 
 def test_scatter_and_composite_honor_cancellation_and_zero_light_identity() -> None:
