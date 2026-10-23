@@ -246,6 +246,11 @@ def main() -> int:
     parser.add_argument("--vitmatte-model", type=Path, required=True)
     parser.add_argument("--profile", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument(
+        "--progress-log",
+        type=Path,
+        help="append flushed JSONL progress events for OOM stage diagnosis",
+    )
     parser.add_argument("--focus-x", type=float, default=0.5)
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
@@ -312,6 +317,17 @@ def main() -> int:
     started = time.perf_counter()
     cpu_before = psutil.Process().cpu_times()
     cgroup_before = _cgroup_v2_snapshot()
+    progress_log = (
+        args.progress_log.open("w", encoding="utf-8")
+        if args.progress_log is not None
+        else None
+    )
+
+    def record_progress(progress: Any) -> None:
+        if progress_log is not None:
+            progress_log.write(json.dumps(progress.as_dict(), sort_keys=True) + "\n")
+            progress_log.flush()
+
     try:
         with (
             ProcessTreePeak() as peak,
@@ -325,10 +341,17 @@ def main() -> int:
                 threads=args.threads,
             ) as engine,
         ):
-            result = engine.process_file(args.input, args.output, options=options)
+            result = engine.process_file(
+                args.input,
+                args.output,
+                options=options,
+                progress_callback=record_progress if progress_log is not None else None,
+            )
     finally:
         profiler.restore()
         highlights._scatter_field_optical = original_field_scatter
+        if progress_log is not None:
+            progress_log.close()
     wall_seconds = time.perf_counter() - started
     cpu_after = psutil.Process().cpu_times()
     profiler_report = profiler.write()
