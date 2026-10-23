@@ -54,8 +54,12 @@ active processing task, one queued task, a 3 GiB container memory limit, and two
 CPU cores. Web has separate 256 MiB and 0.5 CPU limits. Change
 `LAIKA_MEMORY_LIMIT`, `LAIKA_CPU_LIMIT`, `LAIKA_API_THREADS`,
 `LAIKA_API_MAX_WORKERS`, or `LAIKA_API_QUEUE_CAPACITY` in `.env` to match the
-host. More workers multiply image and model working sets; raise concurrency
-only after measuring the complete set of requested models and image sizes.
+host. More workers multiply image and model working sets. On the 4 GiB Linux
+ARM64 guest with a 3 GiB task cgroup, one five-model 1620×1080 request peaked
+at 1,867,460,608 B; two concurrent workers reached 3,129,069,568 B (97.14% of
+the cap), leaving only 87.9 MiB. Keep one worker for 3 GiB deployments. Raise
+concurrency only after measuring the complete model set and largest supported
+image sizes under the intended cgroup limit. See the [API concurrency report](benchmarks/api-concurrency-memory-2026-10-23.md).
 
 The 3 GiB default is a starting configuration, not a claim that every mode or
 source resolution has passed a 3 GiB cgroup test. See [project status](PROJECT_STATUS.md)

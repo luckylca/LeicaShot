@@ -1,0 +1,6 @@
+FROM leicashot-api:local
+
+USER root
+RUN python -m pip install --no-cache-dir 'httpx>=0.27'
+
+USER 10001:10001

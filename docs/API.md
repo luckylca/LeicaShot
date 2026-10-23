@@ -67,6 +67,13 @@ limit, storage budget, and Low Memory/Balanced engine policy as image tasks.
 The route returns ranked crop coordinates synchronously and deletes the upload
 after scoring.
 
+Concurrency is bounded by `LAIKA_API_MAX_WORKERS` plus the waiting queue. In a
+Linux ARM64 3 GiB cgroup, one 1620×1080 request using M9, Depth, SAM, ViTMatte,
+ARNet and highlights peaked at 1,867,460,608 B; two simultaneous workers
+peaked at 3,129,069,568 B, or 97.14% of the cgroup limit. Keep one worker for
+3 GiB deployments, especially when users may submit larger photos. See the
+[API concurrency report](benchmarks/api-concurrency-memory-2026-10-23.md).
+
 ## Create and follow a task
 
 `POST /api/v1/tasks` is multipart form data with a `file` part and an optional
