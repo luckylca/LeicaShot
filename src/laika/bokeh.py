@@ -22,7 +22,9 @@ BOKEH_REFERENCE_ONNX_SHA256 = (
 BOKEH_INPUTS = ("image", "defocus")
 BOKEH_OUTPUT = "output"
 BOKEH_STRATEGIES = ("low-memory", "balanced")
-BOKEH_TILE_EDGE = 512
+BOKEH_LOW_MEMORY_TILE_EDGE = 256
+BOKEH_BALANCED_TILE_EDGE = 512
+BOKEH_TILE_EDGE = BOKEH_BALANCED_TILE_EDGE
 BOKEH_TILE_HALO = 16
 BOKEH_FULL_INFERENCE_PIXEL_LIMIT = 1_000_000
 
@@ -134,13 +136,19 @@ class BokehMeARNet:
         *,
         strategy: Literal["low-memory", "balanced"] = "low-memory",
         intra_op_num_threads: int | None = None,
-        inference_tile_edge: int = BOKEH_TILE_EDGE,
+        inference_tile_edge: int | None = None,
         full_inference_pixel_limit: int = BOKEH_FULL_INFERENCE_PIXEL_LIMIT,
         expected_sha256: str | None = None,
         session_factory: Any | None = None,
     ) -> None:
         if strategy not in BOKEH_STRATEGIES:
             raise ValueError(f"strategy must be one of {', '.join(BOKEH_STRATEGIES)}")
+        if inference_tile_edge is None:
+            inference_tile_edge = (
+                BOKEH_LOW_MEMORY_TILE_EDGE
+                if strategy == "low-memory"
+                else BOKEH_BALANCED_TILE_EDGE
+            )
         if intra_op_num_threads is None:
             intra_op_num_threads = (
                 1 if strategy == "low-memory" else min(4, os.cpu_count() or 1)

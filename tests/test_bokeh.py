@@ -222,9 +222,25 @@ def test_low_memory_arnet_default_tiles_frames_above_one_megapixel(
         session_factory=lambda *_args, **_kwargs: FakeSession(),
     )
 
+    assert engine.runtime_info.inference_tile_edge == 256
     assert engine.runtime_info.full_inference_pixel_limit == 1_000_000
     assert not engine.will_tile(1000, 1000)
     assert engine.will_tile(1024, 1024)
+
+
+def test_balanced_arnet_keeps_512_pixel_tiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    engine = BokehMeARNet(
+        model,
+        strategy="balanced",
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+    )
+
+    assert engine.runtime_info.inference_tile_edge == 512
 
 
 def test_low_memory_arnet_keeps_odd_dimensions_on_validated_full_path(

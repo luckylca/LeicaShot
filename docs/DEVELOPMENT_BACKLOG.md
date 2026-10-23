@@ -1,6 +1,6 @@
 # LeicaShot development backlog
 
-Updated: 2026-10-24. Priorities reflect user-requested end-to-end delivery order and current integration risk. Latest merge: PR #56 (`c4db3bc`). Active branch: `perf/subject-protection-2g-memory` (current-source five-model 5760×3840 task completed once at 2 GiB; cgroup limit reached with no OOM kill).
+Updated: 2026-10-24. Priorities reflect user-requested end-to-end delivery order and current integration risk. Latest merge: PR #57 (`c2f17f7`). Active branch: `perf/arnet-tile-headroom` (Low Memory tile-size policy and full-resolution 2 GiB repeat evidence).
 
 | Priority | Work | State | Acceptance |
 |---:|---|---|---|
@@ -36,6 +36,7 @@ Updated: 2026-10-24. Priorities reflect user-requested end-to-end delivery order
 | 30 | ARNet and highlight-renderer full-resolution array lifetimes | Merged PR #54 (`458a4dc`). Releasing source/composite/CoC frames after final RGB reduced the 5760×3840 highlight-scatter process-tree stage peak by 615,436,288 B (25.03%) in a paired run with an exact output hash. Whole-task cgroup peak rose by 147,734,528 B in that single pair because the maximum remains in ARNet. See the [buffer lifetime report](benchmarks/arnet-live-buffer-lifetimes-4g-2026-10-23.md). | Keep the measured stage-local reduction and continue tracking whole-task peak separately. |
 | 31 | Lower ARNet full-resolution inference/composite peak | Merged PR #55 (`bc9cd35`). The 1440×960 intermediate changed from one full-frame call to six 512×512 cores; real M9/depth FP32 output parity was exact. A three-model 5760×3840 task completed at 2 GiB with exact PNG output. The current five-model task also completes once at 2 GiB but reaches the cgroup cap; repeat and improve headroom. See the [threshold report](benchmarks/arnet-pass-peak-2g-2026-10-23.md) and [five-model report](benchmarks/full-resolution-five-model-2g-2026-10-24.md). | Test odd-dimension tile coverage and reduce peak anonymous memory for the full subject-enabled pipeline. |
 | 32 | Full-resolution optical highlight scatter CPU time | Merged PR #56 (`c4db3bc`): in-place weighted accumulation preserved the exact 5760×3840 no-subject PNG hash. In one paired 2 GiB run, scatter fell 18.34% and total task fell 16.75%; cgroup peak fell 0.72%, while process-tree RSS rose 0.33%. See the [A/B report](benchmarks/highlight-scatter-inplace-accumulation-2g-2026-10-24.md). | Broaden scene/device measurements without claiming lower RSS; continue prioritizing full subject-enabled memory headroom. |
+| 33 | ARNet tile edge versus complete-task memory at 2 GiB | Full-resolution 5760×3840 256-tile task completed with exact PNG parity; process-tree peak fell 63,336,448 B and cgroup peak fell 21,594,112 B versus the first 512-tile run. A repeat 512 run was OOM-killed in ARNet. Low Memory selects 256; Balanced retains 512. Sequential timing varied (2,098.507 s vs 1,475.646 s) and is not attributed to tile size. See the [headroom report](benchmarks/arnet-tile-headroom-2g-2026-10-24.md). | Reduce the ARNet-stage residual full-frame live-buffer peak; repeat across scenes and validate 4 GiB service headroom. |
 
 ## Required per-item evidence
 
