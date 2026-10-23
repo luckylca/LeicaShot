@@ -4,7 +4,7 @@ Updated: 2026-10-23
 
 ## Current optimization checkpoint
 
-PR #43's full-resolution CPU profile measured highlight scatter at 2,845.631 s; 53,940 single-channel mass convolutions consumed 1,497.169 s. On `perf/scatter-skip-empty-mass`, the same-source 5760×3840 A/B confirmed 32,718 zero-input mass filters can be skipped with byte-identical PNG output. Task time fell from 2,798.908 s to 1,569.613 s; scatter fell from 2,490.479 s to 1,272.015 s. Process-tree RSS was effectively unchanged and cgroup peak fell 51.6 MB; both runs had zero OOM/limit events. See the [paired cgroup report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md). Remaining scatter time is still dominated by nonzero `filter2D` work; profile that separately after this change is reviewed.
+PR #44's native-resolution A/B confirmed the exact-zero mass skip with identical decoded PNGs and a 43.92% lower task time. The active `perf/cpu-thread-scaling` branch has a same-photo 1440×960 five-model smoke: two threads finished 35.6% faster than one, with exact pixels and 17.4 MB higher cgroup peak. The 5760×3840 run is required before recommending that setting for Low Memory. See the [zero-mass skip report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
 
 ## Intended Python call
 

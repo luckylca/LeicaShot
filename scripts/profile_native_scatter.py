@@ -187,6 +187,12 @@ def main() -> int:
     parser.add_argument("--matte-tile-size", type=int, default=512)
     parser.add_argument("--subject-point", type=_point, action="append")
     parser.add_argument(
+        "--threads",
+        type=int,
+        default=1,
+        help="ONNX Runtime and OpenCV worker count for the full pipeline",
+    )
+    parser.add_argument(
         "--disable-empty-mass-skip",
         action="store_true",
         help="run the unoptimized mass-filter path for an A/B baseline",
@@ -234,7 +240,7 @@ def main() -> int:
                 sam_model_dir=args.sam_model_dir,
                 vitmatte_model_path=args.vitmatte_model,
                 strategy="low-memory",
-                threads=1,
+                threads=args.threads,
             ) as engine,
         ):
             result = engine.process_file(args.input, args.output, options=options)
@@ -265,6 +271,7 @@ def main() -> int:
             "subject_points": [list(point) for point in points],
             "matte_tile_size": options.matte_tile_size,
             "skip_empty_mass": not args.disable_empty_mass_skip,
+            "threads": args.threads,
         },
         "runtime": {
             "python": platform.python_version(),
