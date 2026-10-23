@@ -89,4 +89,4 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Next action
 
-Finish PR review and CI for `perf/api-native-resolution-4g`, then start `perf/native-resolution-scatter-profile`: profile the 3,119.995 s scatter stage on the same input, model files, output dimensions, CPU quota and cgroup, retaining exact output comparison. The 4 GiB single-task API run completed with 1.18 GiB cgroup headroom; do not extrapolate to concurrent native-size tasks. Preserve output size and highlight behavior.
+Continue `perf/native-resolution-scatter-profile`: finish the active 5760×3840 CPU run in a 4 GiB cgroup, verify exact PNG parity with the completed API result, and record cProfile/filter-size timing plus RSS. Use measured hotspots to choose a separate exactness-first optimization experiment; keep output size and highlight behavior fixed. The 4 GiB single-task API run completed with 1.18 GiB cgroup headroom; do not extrapolate to concurrent native-size tasks.
