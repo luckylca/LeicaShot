@@ -65,10 +65,11 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - A source-verified 5760×3840 five-model/subject task at no-swap 2 GiB completed with the same PNG SHA as PR #61. Scatter-stage process-tree peak fell 107,532,288 B, whole-task process-tree peak fell 42,545,152 B, exact cgroup `memory.peak` fell 29,478,912 B, and largest 1-second cgroup current fell 85,499,904 B. All cgroup max/OOM counters remained zero.
 - On a deterministic scatter fixture, maximum absolute intermediate difference from the FP64 route was `1.1920928955078125e-7`; the final uint8 composite was byte-identical. Native-size full-pipeline times were effectively unchanged and are not a speed claim. This is one real scene; 2 GiB remains experimental. See the [measurement report](benchmarks/highlight-scatter-fp32-workspace-2g-2026-10-24.md).
 
-## Current investigation: row-tile-local scatter accumulators
+## Rejected: row-major tile-local scatter accumulators
 
-- `perf/highlight-scatter-accumulator-tiles` starts from PR #62 (`08af060`). Current field-optical scatter retains full-resolution float32 `output` and `own` RGB frames plus float32 `coverage` through all CoC levels. The proposed traversal processes all levels for one output row band at a time, allowing only `output` to remain full-frame while `own` and `coverage` are tile-local.
-- Preserve the sorted CoC layer order within each pixel, all 25 interpolated field nodes and their reflected convolution halos, cancellation checks, and monotonic progress callbacks. The algorithm is only a candidate until small-fixture parity and a source-verified native-size cgroup run complete.
+- Candidate `31906f0` moved the all-level loop inside the output row-band loop and retained the full-frame output while using row-local `own` and coverage arrays. The native full pipeline preserved its PNG hash but raised scatter-stage process-tree RSS by 281,026,560 B, raised exact cgroup peak to the 2 GiB hard limit (113 `max` events), and increased scatter time by 256.946 s. Whole-task time rose 17.47%.
+- The candidate was reverted by `d6b9bbf`; merged PR #62's level-major implementation remains active. Full environment and telemetry are in the [rejected experiment report](benchmarks/scatter-row-major-accumulators-rejected-2g-2026-10-24.md).
+- Next: validate PR #62 on another real scene, then profile nonzero mass-filter cost for a different CPU/memory approach.
 
 ## Exact-zero highlight scatter optimization on `perf/highlight-scatter-cpu`
 

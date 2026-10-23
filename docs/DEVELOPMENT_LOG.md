@@ -325,3 +325,10 @@
 
 - Squash-merged [PR #62](https://github.com/luckylca/LeicaShot/pull/62) as `08af060` after all eight required checks passed. This preserves the native-size output hash and lowers one-scene 2 GiB cgroup peak by 29,478,912 B.
 - Immediately created `perf/highlight-scatter-accumulator-tiles` from the updated `develop`. The next bounded experiment targets the full-resolution `own` RGB and `coverage` arrays that remain live across all optical-scatter levels. First verify that row-tile traversal preserves per-pixel layer ordering and the real output, then profile it under the same cgroup.
+
+## 2026-10-24 — Reject row-major scatter accumulators
+
+- The row-band-major candidate completed the full CPU pipeline on the 5760×3840 photo and matched PR #62's PNG SHA exactly. It took 1,763.941 s (PR #62: 1,501.569 s); scatter took 1,435.059 s (PR #62: 1,178.114 s).
+- Its process-tree peak was 1,940,873,216 B, with the same high-water in highlight scatter; PR #62 recorded 1,724,833,792 B whole-task RSS and 1,659,846,656 B scatter-stage RSS. Exact cgroup peak reached the 2,147,483,648 B limit, sampled current came within 4,096 B of the cap, and `memory.events max` incremented 113 times. OOM counters remained zero.
+- Reverted candidate code commit `31906f0` as `d6b9bbf`. Local candidate validation had passed 214 tests and Ruff. The full configuration, model hashes, output verification and telemetry are in the [negative-result report](benchmarks/scatter-row-major-accumulators-rejected-2g-2026-10-24.md).
+- Next: merge this useful negative result as documentation, then start second-scene validation of PR #62 and profile the remaining nonzero mass-filter bottleneck.
