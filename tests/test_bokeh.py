@@ -210,6 +210,23 @@ def test_low_memory_arnet_tiles_even_images_and_matches_full_fake_session(
     )
 
 
+def test_low_memory_arnet_default_tiles_frames_above_one_megapixel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    engine = BokehMeARNet(
+        model,
+        strategy="low-memory",
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+    )
+
+    assert engine.runtime_info.full_inference_pixel_limit == 1_000_000
+    assert not engine.will_tile(1000, 1000)
+    assert engine.will_tile(1024, 1024)
+
+
 def test_low_memory_arnet_keeps_odd_dimensions_on_validated_full_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

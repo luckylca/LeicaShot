@@ -264,3 +264,11 @@
 - Both outputs are 5760×3840 RGB PNGs of 16,621,497 bytes and share SHA-256 `62bf1f9b29a93e15435d5f38eb9975d5e910ca773fc5eb4e6de43b16a8ca1aef`.
 - Scatter took 4,779.098 s at 512 rows and 4,473.569 s at 128 rows. Cgroup peak was 3.66% lower at 512, while sampled process-tree RSS was 2.02% higher. Several other stage timings varied by 3–5×, so the single sequential trials do not isolate chunk-size performance or establish a stable memory winner. Retain the 128-row default. Full configuration and stage data are in the [comparison report](benchmarks/highlight-chunk-size-cgroup-2026-10-23.md).
 - Next engineering task: repeat native 5760×3840 subject protection with current-source M9, Depth, ARNet, SAM and ViTMatte under cgroup telemetry; retain full output resolution and report edge quality.
+
+## 2026-10-23 — ARNet scale-transition memory boundary
+
+- Merged PR #54 (`458a4dc`) to release full-resolution ARNet buffers before highlight scatter. The paired run showed lower scatter-stage residency but no whole-task peak reduction; see the [buffer lifetime report](benchmarks/arnet-live-buffer-lifetimes-4g-2026-10-23.md).
+- Created `perf/arnet-pass-peak-memory`. Reproduced the 2 GiB OOM transition: after a 2880×1920 tiled pass, the next 1440×960 (1.38 MP) scale fell below the prior 4 MP threshold and triggered a full-frame call. Lowered Low Memory's full-frame cutoff to 1 MP; Balanced remains unchanged.
+- Real M9/depth ARNet tensor at 1440×960 matched bitwise between full-frame and six 512×512 cores with a 16-pixel halo (max and mean absolute error 0, same SHA-256).
+- A native 5760×3840 M9 + Depth + ARNet/highlight CPU task completed in a no-swap 2 GiB cgroup in 1,409.220 s, with 1,824,636,928 B process-tree peak RSS, 2,029,903,872 B cgroup peak, zero OOM/limit events, and a byte-identical output hash. It did not include SAM, ViTMatte or subject protection. The 2 GiB subject-enabled task remains unverified. See the [ARNet threshold report](benchmarks/arnet-pass-peak-2g-2026-10-23.md).
+- Local targeted suite passed 17 Bokeh tests before the full pipeline run. After the full run, all 206 local tests passed; Ruff lint, Ruff format check, and `git diff --check` passed. Remote CI is pending on this branch.
