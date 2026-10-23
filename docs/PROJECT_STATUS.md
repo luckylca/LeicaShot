@@ -4,9 +4,9 @@ Updated: 2026-10-23
 
 ## Current checkpoint
 
-- Stable integration branch: `develop`, at merge commit `d4090ba` after PR #47.
-- Most recent merged PR: [#47, measure FP32 mass-filter tradeoff](https://github.com/luckylca/LeicaShot/pull/47); all eight CI checks passed.
-- Active branch: `perf/nonzero-mass-fft-screen`, based on `develop` at `d4090ba`. A 5760×3840 five-model FFT32-edge experiment completed under a 4 GiB cgroup with byte-identical PNG output, 2,622,283,776 B cgroup peak and zero OOM/limit events. It routed 3,571/12,041 scalar mass calls through FFT, but total mass-filter time was 360.590 s vs 360.133 s for the FP64 OpenCV control and highlight scatter was 1,023.005 s vs 984.026 s. The route remains opt-in and is not a production optimization. See the [FFT screen report](benchmarks/mass-filter-fft-screen-4g-2026-10-23.md).
+- Stable integration branch: `develop`, at merge commit `0c23271` after PR #48.
+- Most recent merged PR: [#48, screen cached FFT mass filter](https://github.com/luckylca/LeicaShot/pull/48); all eight CI checks passed.
+- Active branch: `perf/fullres-2g-cgroup`, based on `develop` at `0c23271`. The full 5760×3840 five-model CPU task was attempted twice with cgroup-v2 `memory.max=2,147,483,648` B and `memory.swap.max=2,147,483,648` B; both were OOM-killed at the memory cap. Swap usage at the time of either OOM was not captured. The second run persisted progress: M9, Depth, SAM, ViTMatte and ARNet passes 1–2 completed; it died before the next bokeh progress event at 75%. `oom=1`, `oom_kill=1`, `oom_group_kill=0`; no complete output or process-tree peak report was available. See the [2 GiB report](benchmarks/fullres-2g-cgroup-2026-10-23.md).
 - PR #45's full-resolution two-thread task completed in 1,529.419 s versus PR #44's one-thread 1,569.613 s (−2.56%); scatter was 1.50% faster. cgroup peak was 2,830,872,576 B with zero OOM events. One output channel value differed by one LSB (MAE 1.507e−8, max 1); retain one thread as Low Memory default. See the [thread scaling report](benchmarks/cpu-thread-scaling-native-4g-2026-10-23.md).
 - A screening trial of replacing `BORDER_REFLECT_101` with `BORDER_CONSTANT` found identical final uint8 composite pixels on a 512×384 fixture, but 1024×768 scatter ran about 0.4% slower and the raw float32 arrays differed below 1e−16. No native-size test is planned for this lower-value candidate.
 - PR #44's full-resolution A/B on the same five-model 5760×3840 CPU task: 2,798.908 s / 2,896,424,960 B cgroup peak with the exact-zero skip disabled; 1,569.613 s / 2,844,807,168 B with it enabled. Scatter time fell 48.92%, 32,718 zero-input mass filters were avoided, outputs were byte-identical, and both cgroups recorded zero OOM/limit events. See the [A/B report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
@@ -93,4 +93,4 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Next action
 
-Complete the report, run full local checks, and submit PR #48 with the FFT path clearly experimental and disabled by default. After it merges, start a fresh branch to test the full-resolution five-model pipeline under a 2 GiB cgroup; do not change image resolution or skip stages to make it pass.
+Finish and merge the 2 GiB failure report and persistent progress-log support. Then create a new branch for live per-stage RSS / cgroup telemetry and reduce peak live buffers or model residency around the transition after ARNet pass 2. Repeat the exact 2 GiB task only after the measurement/fix is ready; require a complete native-size PNG before calling it a pass.
