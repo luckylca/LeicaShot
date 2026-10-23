@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import platform
+import subprocess
 import sys
 import threading
 import time
@@ -13,11 +14,64 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
-import psutil
+# Benchmarking from a source mount must measure that checkout, not a potentially
+# stale package baked into the benchmark container image.
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_SOURCE_ROOT = _REPOSITORY_ROOT / "src"
+_PACKAGE_ROOT = _SOURCE_ROOT / "laika"
+if not (_PACKAGE_ROOT / "__init__.py").is_file():
+    raise RuntimeError(f"Laika source package is missing from {_PACKAGE_ROOT}")
+sys.path.insert(0, str(_SOURCE_ROOT))
 
-from laika.cgroup import memory_stats as _cgroup_memory
-from laika.composition import CompositionCrop
-from laika.processing import LaikaProcessingEngine, ProcessingOptions
+import psutil  # noqa: E402
+
+import laika  # noqa: E402
+from laika.cgroup import memory_stats as _cgroup_memory  # noqa: E402
+from laika.composition import CompositionCrop  # noqa: E402
+from laika.processing import LaikaProcessingEngine, ProcessingOptions  # noqa: E402
+
+
+def _source_tree_sha256() -> str:
+    digest = hashlib.sha256()
+    for path in sorted(_PACKAGE_ROOT.rglob("*.py")):
+        digest.update(path.relative_to(_SOURCE_ROOT).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _source_provenance() -> dict[str, Any]:
+    package_file = Path(laika.__file__).resolve()
+    if not package_file.is_relative_to(_PACKAGE_ROOT.resolve()):
+        raise RuntimeError(
+            f"Benchmark imported Laika from {package_file}, outside {_PACKAGE_ROOT}"
+        )
+    try:
+        revision = subprocess.run(
+            ["git", "-C", str(_REPOSITORY_ROOT), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "-C", str(_REPOSITORY_ROOT), "status", "--porcelain"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        revision = None
+        dirty = None
+    return {
+        "repository_root": str(_REPOSITORY_ROOT),
+        "package_file": str(package_file),
+        "source_tree_sha256": _source_tree_sha256(),
+        "git_revision": revision,
+        "git_worktree_dirty": dirty,
+    }
 
 
 class ProcessTreePeak:
@@ -145,6 +199,7 @@ def main() -> int:
         except (ValueError, AttributeError):
             parser.error("--subject-point must use normalized X,Y coordinates")
 
+    source_provenance = _source_provenance()
     started = time.perf_counter()
     progress_context = (
         args.progress_log.open("w", encoding="utf-8")
@@ -228,6 +283,7 @@ def main() -> int:
             progress_callback=on_progress,
         )
     report = {
+        "source": source_provenance,
         "input": str(args.input),
         "input_sha256": _sha256(args.input),
         "output": str(args.output),
