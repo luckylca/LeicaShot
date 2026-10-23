@@ -538,7 +538,12 @@ def _scatter_field_optical(
                 )
                 row_offset = y0 - out_y0
                 rows = slice(row_offset, row_offset + y1 - y0)
-                mass_total[rows, x0:x1] += node_mass * node_weight
+                if node_mass.dtype == np.float64:
+                    np.multiply(node_mass, node_weight, out=node_mass)
+                    mass_total[rows, x0:x1] += node_mass
+                else:
+                    # Keep experimental FP32/FFT routes' existing promotion.
+                    mass_total[rows, x0:x1] += node_mass * node_weight
                 # Keep the mass filter for occlusion; only empty radiance is skipped.
                 if weighted is not None and np.any(weighted):
                     radiance = cv2.filter2D(
@@ -550,9 +555,12 @@ def _scatter_field_optical(
                     node_radiance = radiance[
                         half : half + y1 - y0, half : half + x1 - x0
                     ]
-                    radiance_total[rows, x0:x1] += (
-                        node_radiance * node_weight[:, :, None]
+                    np.multiply(
+                        node_radiance,
+                        node_weight[:, :, None],
+                        out=node_radiance,
                     )
+                    radiance_total[rows, x0:x1] += node_radiance
                 del (
                     selection,
                     source_high,
