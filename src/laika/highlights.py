@@ -435,63 +435,62 @@ def _scatter_field_optical(
             mass_total = np.zeros((row_count, width), dtype=np.float64)
             radiance_total = np.zeros((row_count, width, 3), dtype=np.float64)
 
-            half = kernels[0].shape[0] // 2
-            for y_index, (_, wy, node_y0, node_y1) in enumerate(ys):
+            for node, kernel in zip(nodes, kernels, strict=True):
+                _, _, wx, wy, x0, x1, node_y0, node_y1, _ = node
                 y0 = max(out_y0, node_y0)
                 y1 = min(out_y1, node_y1)
                 if y0 >= y1 or not bool(np.any(wy[y0:y1] > 0.0)):
                     continue
+                half = kernel.shape[0] // 2
                 source_y = _reflected_rows(y0, y1, half, height)
-                source_coc = depth[source_y] * np.float32(radius_scale)
-                layer_weight_full = np.maximum(
+                source_x = _reflected_rows(x0, x1, half, width)
+                selection = np.ix_(source_y, source_x)
+                source_high = high[selection]
+                source_coc = depth[selection] * np.float32(radius_scale)
+                layer_weight = np.maximum(
                     np.float32(0.0),
                     np.float32(1.0) - np.abs(source_coc - np.float32(level)),
                 )
-                for x_index, (_, wx, x0, x1) in enumerate(xs):
-                    kernel = kernels[y_index * len(xs) + x_index]
-                    source_x = _reflected_rows(x0, x1, half, width)
-                    source_high = high[np.ix_(source_y, source_x)]
-                    layer_weight = layer_weight_full[:, source_x]
-                    weighted = None
-                    if np.any(source_high):
-                        weighted = np.empty(source_high.shape, dtype=np.float64)
-                        np.multiply(source_high, layer_weight[:, :, None], out=weighted)
-                    mass = cv2.filter2D(
-                        layer_weight.astype(np.float64),
+                weighted = None
+                if np.any(source_high):
+                    weighted = np.empty(source_high.shape, dtype=np.float64)
+                    np.multiply(source_high, layer_weight[:, :, None], out=weighted)
+                mass = cv2.filter2D(
+                    layer_weight.astype(np.float64),
+                    ddepth=cv2.CV_64F,
+                    kernel=kernel,
+                    borderType=cv2.BORDER_REFLECT_101,
+                )
+                node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]
+                node_weight = (
+                    wy[y0:y1].astype(np.float64)[:, None]
+                    * wx[x0:x1].astype(np.float64)[None, :]
+                )
+                row_offset = y0 - out_y0
+                rows = slice(row_offset, row_offset + y1 - y0)
+                mass_total[rows, x0:x1] += node_mass * node_weight
+                # Keep the mass filter for occlusion; only empty radiance is skipped.
+                if weighted is not None and np.any(weighted):
+                    radiance = cv2.filter2D(
+                        weighted,
                         ddepth=cv2.CV_64F,
                         kernel=kernel,
                         borderType=cv2.BORDER_REFLECT_101,
                     )
-                    node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]
-                    node_weight = (
-                        wy[y0:y1].astype(np.float64)[:, None]
-                        * wx[x0:x1].astype(np.float64)[None, :]
+                    node_radiance = radiance[
+                        half : half + y1 - y0, half : half + x1 - x0
+                    ]
+                    radiance_total[rows, x0:x1] += (
+                        node_radiance * node_weight[:, :, None]
                     )
-                    row_offset = y0 - out_y0
-                    rows = slice(row_offset, row_offset + y1 - y0)
-                    mass_total[rows, x0:x1] += node_mass * node_weight
-                    # Keep the mass filter for occlusion; skip empty radiance only.
-                    if weighted is not None and np.any(weighted):
-                        radiance = cv2.filter2D(
-                            weighted,
-                            ddepth=cv2.CV_64F,
-                            kernel=kernel,
-                            borderType=cv2.BORDER_REFLECT_101,
-                        )
-                        node_radiance = radiance[
-                            half : half + y1 - y0, half : half + x1 - x0
-                        ]
-                        radiance_total[rows, x0:x1] += (
-                            node_radiance * node_weight[:, :, None]
-                        )
-                    del (
-                        source_x,
-                        source_high,
-                        layer_weight,
-                        weighted,
-                        mass,
-                    )
-                del source_coc, layer_weight_full, source_y
+                del (
+                    selection,
+                    source_high,
+                    source_coc,
+                    layer_weight,
+                    weighted,
+                    mass,
+                )
 
             receiver_coc = depth[out_y0:out_y1] * np.float32(radius_scale)
             alpha = np.clip(mass_total, 0.0, 1.0).astype(np.float32)
