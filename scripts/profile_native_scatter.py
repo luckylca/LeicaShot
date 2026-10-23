@@ -11,6 +11,7 @@ import pstats
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -188,23 +189,145 @@ class ScatterProfiler:
         }
 
 
+def _augment_cgroup_snapshot(
+    snapshot: dict[str, Any] | None,
+    root: Path = Path("/sys/fs/cgroup"),
+) -> dict[str, Any] | None:
+    """Add cgroup memory categories and swap limits to a v2 snapshot."""
+    if snapshot is None:
+        return snapshot
+    result = dict(snapshot)
+    memory_stat: dict[str, int] = {}
+    try:
+        for line in (root / "memory.stat").read_text(encoding="ascii").splitlines():
+            key, value = line.split(maxsplit=1)
+            memory_stat[key] = int(value)
+    except (OSError, ValueError):
+        memory_stat = {}
+    result["memory_stat_bytes"] = memory_stat
+    for filename, key in (
+        ("memory.swap.current", "swap_current_bytes"),
+        ("memory.swap.max", "swap_limit_bytes"),
+    ):
+        try:
+            value = (root / filename).read_text(encoding="ascii").strip()
+        except OSError:
+            continue
+        if value == "max":
+            result[key] = value
+        else:
+            try:
+                result[key] = int(value)
+            except ValueError:
+                continue
+    return result
+
+
 class ProcessTreePeak:
-    def __init__(self, interval_seconds: float = 0.01) -> None:
+    def __init__(
+        self,
+        interval_seconds: float = 0.01,
+        *,
+        telemetry_stream: Any | None = None,
+        cgroup_snapshot: Callable[[], dict[str, Any] | None] | None = None,
+        telemetry_interval_seconds: float = 1.0,
+    ) -> None:
         self.process = psutil.Process()
         self.interval_seconds = interval_seconds
+        self.telemetry_stream = telemetry_stream
+        self.cgroup_snapshot = cgroup_snapshot
+        self.telemetry_interval_seconds = telemetry_interval_seconds
+        if interval_seconds <= 0 or telemetry_interval_seconds <= 0:
+            raise ValueError("sampling intervals must be positive")
         self.peak_rss_bytes = 0
+        self.stage_peak_rss_bytes: dict[str, int] = {}
+        self.cgroup_memory_high_water_observed_by_stage_bytes: dict[str, int] = {}
+        self._stage = "startup"
+        self._stage_lock = threading.Lock()
+        self._write_lock = threading.Lock()
+        self._started = time.perf_counter()
+        self._last_telemetry_at = self._started
+        self.telemetry_error: str | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._sample, daemon=True)
 
+    def current_bytes(self) -> int:
+        total = 0
+        for process in [self.process, *self.process.children(recursive=True)]:
+            try:
+                total += process.memory_info().rss
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return total
+
+    def set_stage(self, stage: str) -> None:
+        with self._stage_lock:
+            self._stage = stage
+
+    def write_record(self, record: dict[str, Any]) -> None:
+        if self.telemetry_stream is None or self.telemetry_error is not None:
+            return
+        try:
+            with self._write_lock:
+                self.telemetry_stream.write(json.dumps(record, sort_keys=True) + "\n")
+                self.telemetry_stream.flush()
+        except OSError as exc:
+            self.telemetry_error = f"{type(exc).__name__}: {exc}"
+
+    def report(self) -> dict[str, Any]:
+        with self._stage_lock:
+            return {
+                "process_tree_peak_rss_bytes": self.peak_rss_bytes,
+                "process_tree_stage_peak_rss_bytes": dict(self.stage_peak_rss_bytes),
+                "cgroup_memory_high_water_observed_by_stage_bytes": dict(
+                    self.cgroup_memory_high_water_observed_by_stage_bytes
+                ),
+                "telemetry_error": self.telemetry_error,
+            }
+
     def _sample(self) -> None:
         while not self._stop.is_set():
-            total = 0
-            for process in [self.process, *self.process.children(recursive=True)]:
-                try:
-                    total += process.memory_info().rss
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    continue
-            self.peak_rss_bytes = max(self.peak_rss_bytes, total)
+            total = self.current_bytes()
+            now = time.perf_counter()
+            with self._stage_lock:
+                stage = self._stage
+                self.peak_rss_bytes = max(self.peak_rss_bytes, total)
+                self.stage_peak_rss_bytes[stage] = max(
+                    self.stage_peak_rss_bytes.get(stage, 0), total
+                )
+                should_log = (
+                    self.telemetry_stream is not None
+                    and now - self._last_telemetry_at >= self.telemetry_interval_seconds
+                )
+                if should_log:
+                    self._last_telemetry_at = now
+                stage_peak = self.stage_peak_rss_bytes[stage]
+                process_peak = self.peak_rss_bytes
+            if should_log:
+                cgroup = self.cgroup_snapshot() if self.cgroup_snapshot else None
+                if cgroup is not None:
+                    cgroup_peak = cgroup.get("peak_bytes")
+                    if isinstance(cgroup_peak, int):
+                        with self._stage_lock:
+                            self.cgroup_memory_high_water_observed_by_stage_bytes[
+                                stage
+                            ] = max(
+                                self.cgroup_memory_high_water_observed_by_stage_bytes.get(
+                                    stage, 0
+                                ),
+                                cgroup_peak,
+                            )
+                self.write_record(
+                    {
+                        "record_type": "memory_sample",
+                        "stage": stage,
+                        "elapsed_seconds": now - self._started,
+                        "process_tree_rss_bytes": total,
+                        "process_tree_peak_rss_bytes": process_peak,
+                        "process_tree_stage_peak_rss_bytes": stage_peak,
+                        "cgroup_v2": cgroup,
+                    }
+                )
             self._stop.wait(self.interval_seconds)
 
     def __enter__(self) -> ProcessTreePeak:
@@ -214,6 +337,43 @@ class ProcessTreePeak:
     def __exit__(self, *_exc: Any) -> None:
         self._stop.set()
         self._thread.join()
+
+    def _progress_record(self, progress: Any, stage: str) -> None:
+        self.set_stage(stage)
+        if self.telemetry_stream is None:
+            return
+        current = self.current_bytes()
+        cgroup = self.cgroup_snapshot() if self.cgroup_snapshot else None
+        if cgroup is not None:
+            cgroup_peak = cgroup.get("peak_bytes")
+            if isinstance(cgroup_peak, int):
+                with self._stage_lock:
+                    self.cgroup_memory_high_water_observed_by_stage_bytes[stage] = max(
+                        self.cgroup_memory_high_water_observed_by_stage_bytes.get(
+                            stage, 0
+                        ),
+                        cgroup_peak,
+                    )
+        with self._stage_lock:
+            self.peak_rss_bytes = max(self.peak_rss_bytes, current)
+            self.stage_peak_rss_bytes[stage] = max(
+                self.stage_peak_rss_bytes.get(stage, 0), current
+            )
+            stage_peak = self.stage_peak_rss_bytes[stage]
+            process_peak = self.peak_rss_bytes
+        self.write_record(
+            {
+                "record_type": "progress",
+                "stage": stage,
+                "fraction": progress.fraction,
+                "elapsed_seconds": progress.elapsed_seconds,
+                "process_tree_rss_bytes": current,
+                "process_tree_peak_rss_bytes": process_peak,
+                "process_tree_stage_peak_rss_bytes": stage_peak,
+                "cgroup_v2": cgroup,
+                "details": progress.details,
+            }
+        )
 
 
 def _sha256(path: Path) -> str:
@@ -249,7 +409,16 @@ def main() -> int:
     parser.add_argument(
         "--progress-log",
         type=Path,
-        help="append flushed JSONL progress events for OOM stage diagnosis",
+        help=(
+            "write flushed JSONL progress and periodic RSS/cgroup samples "
+            "for OOM diagnosis"
+        ),
+    )
+    parser.add_argument(
+        "--telemetry-interval-seconds",
+        type=float,
+        default=1.0,
+        help="interval between memory samples when --progress-log is used",
     )
     parser.add_argument("--focus-x", type=float, default=0.5)
     parser.add_argument("--focus-y", type=float, default=0.5)
@@ -279,6 +448,8 @@ def main() -> int:
         help="run the unoptimized mass-filter path for an A/B baseline",
     )
     args = parser.parse_args()
+    if args.telemetry_interval_seconds <= 0:
+        parser.error("--telemetry-interval-seconds must be positive")
 
     import cv2
     import numpy as np
@@ -287,6 +458,9 @@ def main() -> int:
     from laika import highlights
     from laika.benchmark import _cgroup_v2_snapshot
     from laika.processing import LaikaProcessingEngine, ProcessingOptions
+
+    def cgroup_snapshot() -> dict[str, Any] | None:
+        return _augment_cgroup_snapshot(_cgroup_v2_snapshot())
 
     points = tuple(args.subject_point or [(0.72, 0.66)])
     original_field_scatter = highlights._scatter_field_optical
@@ -316,21 +490,20 @@ def main() -> int:
     profiler.install()
     started = time.perf_counter()
     cpu_before = psutil.Process().cpu_times()
-    cgroup_before = _cgroup_v2_snapshot()
+    cgroup_before = cgroup_snapshot()
     progress_log = (
         args.progress_log.open("w", encoding="utf-8")
         if args.progress_log is not None
         else None
     )
 
-    def record_progress(progress: Any) -> None:
-        if progress_log is not None:
-            progress_log.write(json.dumps(progress.as_dict(), sort_keys=True) + "\n")
-            progress_log.flush()
-
     try:
         with (
-            ProcessTreePeak() as peak,
+            ProcessTreePeak(
+                telemetry_stream=progress_log,
+                cgroup_snapshot=cgroup_snapshot,
+                telemetry_interval_seconds=args.telemetry_interval_seconds,
+            ) as peak,
             LaikaProcessingEngine(
                 m9_model_path=args.m9_model,
                 depth_model_path=args.depth_model,
@@ -341,6 +514,29 @@ def main() -> int:
                 threads=args.threads,
             ) as engine,
         ):
+
+            def record_progress(progress: Any) -> None:
+                stage = progress.stage
+                if stage == "bokeh":
+                    details = progress.details or {}
+                    if details.get("component") == "arnet_tile":
+                        stage = "bokeh.arnet_tile"
+                    elif progress.fraction < 0.69:
+                        stage = "bokeh.highlight_extraction"
+                    elif progress.fraction < 0.82:
+                        stage = "bokeh.arnet"
+                    elif progress.fraction < 0.83:
+                        stage = "bokeh.highlight_recovery"
+                    elif progress.fraction < 0.91:
+                        stage = "bokeh.highlight_scatter"
+                    elif progress.fraction < 0.92:
+                        stage = "bokeh.highlight_softening"
+                    elif progress.fraction < 0.94:
+                        stage = "bokeh.highlight_composite"
+                    else:
+                        stage = "bokeh.finalize"
+                peak._progress_record(progress, stage)
+
             result = engine.process_file(
                 args.input,
                 args.output,
@@ -353,6 +549,7 @@ def main() -> int:
         if progress_log is not None:
             progress_log.close()
     wall_seconds = time.perf_counter() - started
+    memory_telemetry = peak.report()
     cpu_after = psutil.Process().cpu_times()
     profiler_report = profiler.write()
     from PIL import Image
@@ -395,8 +592,9 @@ def main() -> int:
         "process_cpu_seconds": (cpu_after.user + cpu_after.system)
         - (cpu_before.user + cpu_before.system),
         "process_tree_peak_rss_bytes": peak.peak_rss_bytes,
+        "memory_telemetry": memory_telemetry,
         "cgroup_v2_before": cgroup_before,
-        "cgroup_v2_after": _cgroup_v2_snapshot(),
+        "cgroup_v2_after": cgroup_snapshot(),
         "engine_result": result.as_dict(),
         "scatter_profile": profiler_report,
     }

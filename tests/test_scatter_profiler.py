@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -116,3 +119,69 @@ def test_scatter_profiler_tracks_fft_mass_filter_calls(tmp_path: Path) -> None:
     assert report["fft_mass_filter_calls"] > 0
     assert report["fft_mass_filter_seconds"] > 0.0
     assert report["fft_kernel_cache_peak_bytes"] > 0
+
+
+def test_cgroup_snapshot_includes_memory_categories_and_swap_limits(
+    tmp_path: Path,
+) -> None:
+    module = _load_profiler_module()
+    (tmp_path / "memory.stat").write_text("anon 4096\nfile 2048\nkernel 512\n")
+    (tmp_path / "memory.swap.current").write_text("0\n")
+    (tmp_path / "memory.swap.max").write_text("0\n")
+
+    snapshot = module._augment_cgroup_snapshot(
+        {"current_bytes": 6144, "peak_bytes": 8192}, tmp_path
+    )
+
+    assert snapshot == {
+        "current_bytes": 6144,
+        "peak_bytes": 8192,
+        "memory_stat_bytes": {"anon": 4096, "file": 2048, "kernel": 512},
+        "swap_current_bytes": 0,
+        "swap_limit_bytes": 0,
+    }
+
+
+def test_process_tree_peak_flushes_periodic_stage_and_cgroup_telemetry(
+    monkeypatch,
+) -> None:
+    module = _load_profiler_module()
+
+    class FakeProcess:
+        def memory_info(self):
+            return SimpleNamespace(rss=4096)
+
+        def children(self, recursive: bool):
+            assert recursive
+            return []
+
+    monkeypatch.setattr(module.psutil, "Process", FakeProcess)
+    stream = io.StringIO()
+    progress = SimpleNamespace(
+        fraction=0.5,
+        elapsed_seconds=2.0,
+        details={"component": "arnet_tile"},
+    )
+
+    with module.ProcessTreePeak(
+        interval_seconds=0.001,
+        telemetry_stream=stream,
+        cgroup_snapshot=lambda: {"current_bytes": 6144, "peak_bytes": 8192},
+        telemetry_interval_seconds=0.003,
+    ) as peak:
+        peak._progress_record(progress, "bokeh.arnet_tile")
+        time.sleep(0.012)
+
+    records = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert any(record["record_type"] == "progress" for record in records)
+    samples = [record for record in records if record["record_type"] == "memory_sample"]
+    assert samples
+    assert all(record["stage"] == "bokeh.arnet_tile" for record in samples)
+    assert all(record["process_tree_rss_bytes"] == 4096 for record in samples)
+    assert all(record["cgroup_v2"]["peak_bytes"] == 8192 for record in samples)
+    report = peak.report()
+    assert report["process_tree_stage_peak_rss_bytes"]["bokeh.arnet_tile"] == 4096
+    assert (
+        report["cgroup_memory_high_water_observed_by_stage_bytes"]["bokeh.arnet_tile"]
+        == 8192
+    )
