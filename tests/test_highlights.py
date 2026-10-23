@@ -135,6 +135,56 @@ def test_field_optics_preserves_constant_radiance_through_signed_depth_layers() 
     np.testing.assert_allclose(output, high, rtol=0, atol=4e-6)
 
 
+def test_field_optics_skips_zero_mass_filters_without_changing_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = np.random.default_rng(43)
+    height = width = 101
+    high = rng.random((height, width, 3), dtype=np.float32) * np.float32(0.8)
+    coc = np.empty((height, width), dtype=np.float32)
+    coc[:, :50] = np.float32(-4.0)
+    coc[:, 50:] = np.float32(4.0)
+    levels = highlights._source_levels(coc, 3.0, None)
+    original_filter = highlights.cv2.filter2D
+    zero_mass_calls: list[int] = []
+
+    def counted_filter(source, *args, **kwargs):
+        if source.ndim == 2 and not np.any(source):
+            zero_mass_calls.append(1)
+        return original_filter(source, *args, **kwargs)
+
+    monkeypatch.setattr(highlights.cv2, "filter2D", counted_filter)
+    baseline = highlights._scatter_field_optical(
+        high,
+        coc,
+        2.8,
+        3.0,
+        32,
+        levels,
+        None,
+        None,
+        skip_empty_mass=False,
+    )
+    baseline_zero_mass_calls = len(zero_mass_calls)
+    assert baseline_zero_mass_calls > 0
+
+    zero_mass_calls.clear()
+    candidate = highlights._scatter_field_optical(
+        high,
+        coc,
+        2.8,
+        3.0,
+        32,
+        levels,
+        None,
+        None,
+        skip_empty_mass=True,
+    )
+
+    np.testing.assert_array_equal(candidate, baseline)
+    assert zero_mass_calls == []
+
+
 @pytest.mark.parametrize("has_highlight", [False, True])
 def test_field_optics_skips_rgb_filter_only_for_empty_layer_radiance(
     monkeypatch: pytest.MonkeyPatch, has_highlight: bool

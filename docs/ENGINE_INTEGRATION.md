@@ -2,6 +2,10 @@
 
 Updated: 2026-10-23
 
+## Current optimization checkpoint
+
+PR #43's full-resolution CPU profile measured highlight scatter at 2,845.631 s; 53,940 single-channel mass convolutions consumed 1,497.169 s. The active `perf/scatter-skip-empty-mass` branch adds an exact-zero early exit and an A/B switch for the previous path. A deterministic scatter fixture confirms exact array parity. The optimization remains experimental until same-source 5760×3840 runs show final PNG parity and report filter counts, wall time, process-tree RSS, and cgroup-v2 peak/events.
+
 ## Intended Python call
 
 ```python

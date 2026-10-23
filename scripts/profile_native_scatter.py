@@ -26,7 +26,7 @@ class ScatterProfiler:
         self.profile = cProfile.Profile()
         self.calls = 0
         self.filter_groups: dict[str, dict[str, float | int]] = defaultdict(
-            lambda: {"calls": 0, "seconds": 0.0}
+            lambda: {"calls": 0, "zero_input_calls": 0, "seconds": 0.0}
         )
         self._scatter = highlights_module.scatter_highlights
         self._filter2d = highlights_module.cv2.filter2D
@@ -67,6 +67,8 @@ class ScatterProfiler:
             finally:
                 item = self.filter_groups[key]
                 item["calls"] += 1
+                if source.ndim == 2 and not bool(source.any()):
+                    item["zero_input_calls"] += 1
                 item["seconds"] += time.perf_counter() - started
 
         self.module.cv2.filter2D = timed_filter2d
@@ -184,6 +186,11 @@ def main() -> int:
     parser.add_argument("--aperture", type=float, default=2.8)
     parser.add_argument("--matte-tile-size", type=int, default=512)
     parser.add_argument("--subject-point", type=_point, action="append")
+    parser.add_argument(
+        "--disable-empty-mass-skip",
+        action="store_true",
+        help="run the unoptimized mass-filter path for an A/B baseline",
+    )
     args = parser.parse_args()
 
     import cv2
@@ -195,6 +202,14 @@ def main() -> int:
     from laika.processing import LaikaProcessingEngine, ProcessingOptions
 
     points = tuple(args.subject_point or [(0.72, 0.66)])
+    original_field_scatter = highlights._scatter_field_optical
+    if args.disable_empty_mass_skip:
+
+        def unskipped_field_scatter(*call_args: Any, **call_kwargs: Any) -> Any:
+            call_kwargs["skip_empty_mass"] = False
+            return original_field_scatter(*call_args, **call_kwargs)
+
+        highlights._scatter_field_optical = unskipped_field_scatter
     options = ProcessingOptions(
         mode="color+bokeh",
         strategy="low-memory",
@@ -225,6 +240,7 @@ def main() -> int:
             result = engine.process_file(args.input, args.output, options=options)
     finally:
         profiler.restore()
+        highlights._scatter_field_optical = original_field_scatter
     wall_seconds = time.perf_counter() - started
     cpu_after = psutil.Process().cpu_times()
     profiler_report = profiler.write()
@@ -248,6 +264,7 @@ def main() -> int:
             "aperture": options.aperture,
             "subject_points": [list(point) for point in points],
             "matte_tile_size": options.matte_tile_size,
+            "skip_empty_mass": not args.disable_empty_mass_skip,
         },
         "runtime": {
             "python": platform.python_version(),
