@@ -4,7 +4,7 @@ Updated: 2026-10-23
 
 ## Current optimization checkpoint
 
-PR #44's native-resolution A/B confirmed the exact-zero mass skip with identical decoded PNGs and a 43.92% lower task time. A subsequent 5760×3840 thread comparison found two threads 2.56% faster overall but 7.47% higher process CPU time; one output channel differed by one LSB. Keep one thread as the Low Memory default. See the [thread scaling report](benchmarks/cpu-thread-scaling-native-4g-2026-10-23.md) and [zero-mass skip report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
+PR #44's native-resolution A/B confirmed the exact-zero mass skip with identical decoded PNGs and a 43.92% lower task time. The PR #45 thread comparison found two threads 2.56% faster overall but 7.47% higher process CPU time, with one output channel differing by one LSB; Low Memory remains at one thread. Two current-source 256-row full-pipeline runs measured scatter at 1,016.780 / 1,096.835 s (mean 1,056.807 s, −16.92% vs the 128-row baseline); one 512-row run took 1,028.462 s. All outputs were byte-identical, and the 256-row cgroup peaks stayed below the 128-row peak. This branch changes engine/API/CLI defaults to 256 while retaining explicit per-request chunk control. See the [row-chunk report](benchmarks/scatter-row-chunk-256-native-4g-2026-10-23.md), [thread scaling report](benchmarks/cpu-thread-scaling-native-4g-2026-10-23.md), and [zero-mass skip report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
 
 ## Intended Python call
 

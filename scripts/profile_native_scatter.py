@@ -185,6 +185,7 @@ def main() -> int:
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
     parser.add_argument("--matte-tile-size", type=int, default=512)
+    parser.add_argument("--bokeh-row-chunk-height", type=int, default=256)
     parser.add_argument("--subject-point", type=_point, action="append")
     parser.add_argument(
         "--threads",
@@ -224,6 +225,7 @@ def main() -> int:
         aperture=args.aperture,
         subject_points=points,
         matte_tile_size=args.matte_tile_size,
+        bokeh_row_chunk_height=args.bokeh_row_chunk_height,
     )
     profiler = ScatterProfiler(highlights, args.profile)
     profiler.install()
@@ -270,6 +272,7 @@ def main() -> int:
             "aperture": options.aperture,
             "subject_points": [list(point) for point in points],
             "matte_tile_size": options.matte_tile_size,
+            "bokeh_row_chunk_height": options.bokeh_row_chunk_height,
             "skip_empty_mass": not args.disable_empty_mass_skip,
             "threads": args.threads,
         },

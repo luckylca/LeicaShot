@@ -117,7 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="low-memory",
     )
     bokeh_parser.add_argument("--threads", type=int, default=None)
-    bokeh_parser.add_argument("--row-chunk-height", type=int, default=128)
+    bokeh_parser.add_argument("--row-chunk-height", type=int, default=256)
     bokeh_parser.add_argument(
         "--width",
         type=int,
@@ -172,7 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument("--width", type=int)
     pipeline_parser.add_argument("--height", type=int)
     pipeline_parser.add_argument("--m9-row-chunk-height", type=int, default=512)
-    pipeline_parser.add_argument("--bokeh-row-chunk-height", type=int, default=128)
+    pipeline_parser.add_argument("--bokeh-row-chunk-height", type=int, default=256)
     pipeline_parser.add_argument(
         "--crop",
         type=_parse_composition_crop,

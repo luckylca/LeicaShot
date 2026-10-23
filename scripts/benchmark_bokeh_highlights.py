@@ -70,7 +70,7 @@ def main() -> int:
     parser.add_argument("--focus-x", type=float, default=0.5)
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
-    parser.add_argument("--row-chunk-height", type=int, default=64)
+    parser.add_argument("--row-chunk-height", type=int, default=256)
     parser.add_argument("--threads", type=int, default=1)
     args = parser.parse_args()
     if args.long_edge < 2 or args.row_chunk_height < 1 or args.threads < 1:
