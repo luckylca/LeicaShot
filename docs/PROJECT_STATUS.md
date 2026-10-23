@@ -4,9 +4,9 @@ Updated: 2026-10-23
 
 ## Current checkpoint
 
-- Stable integration branch: `develop`, at merge commit `98ecf38` after PR #41.
-- Most recent merged PR: [#41, document full-resolution API resource validation](https://github.com/luckylca/LeicaShot/pull/41); all eight required CI jobs passed.
-- Active branch: `perf/api-native-resolution-4g`, based on `develop` at `98ecf38`. It adds preview/download capture to the API benchmark and records a 4 GiB native-resolution task.
+- Stable integration branch: `develop`, at merge commit `31f61c9` after PR #42.
+- Most recent merged PR: [#42, validate native-resolution API task at 4 GiB](https://github.com/luckylca/LeicaShot/pull/42); all eight required CI jobs passed.
+- Active branch: `perf/native-resolution-scatter-profile`, based on clean `develop` at `31f61c9`. Its profiling harness wraps the real shared-engine scatter call, records OpenCV filter timings, process RSS and cgroup memory, and checks the full-resolution output hash.
 - Current API concurrency measurements use the same five-model + highlights 1620×1080 request. One worker/task completed in 81.520 s at 1,867,460,608 B cgroup peak in a 3 GiB cgroup. Two workers/tasks completed in 109.291 s at 3,129,069,568 B (97.14% of the limit), leaving 87.9 MiB and zero OOM events. Keep the one-worker default at this tier; two workers do not have adequate headroom for larger inputs.
 - The native-resolution API task completed on `perf/api-native-resolution`: one CPU-only 5760×3840 M9 + LabFusion + Depth + SAM + ViTMatte + ARNet/highlights request finished in 4,167.105 s and downloaded a 16,655,520-byte PNG whose SHA-256 matches the direct-engine baseline. Process-tree RSS/USS peaks were 2,809,442,304 / 2,794,074,112 B; cgroup peak was 3,075,403,776 B (95.47% of 3 GiB), leaving 139.1 MiB and recording zero OOM/limit events. Highlight scatter took 3,720.483 s (89.3% of engine time). This demonstrates one completion, not robust 3 GiB service headroom or a stable timing comparison. See the [full API report](benchmarks/api-native-resolution-2026-10-23.md).
 - A follow-up 5760×3840 API task completed in a 4 GiB cgroup and downloaded both full PNG and 1600×1067 preview. Peak cgroup memory was 3,027,701,760 B (70.49% of limit), process-tree RSS/USS were 2,655,535,104 / 2,640,166,912 B, and OOM/limit events were zero. The full PNG hash matches the prior direct-engine and API outputs exactly. Wall time was 3,562.790 s; highlight scatter took 3,119.995 s. This is one scene and not a stable timing comparison. See the [4 GiB API report](benchmarks/api-native-resolution-4g-2026-10-23.md).
@@ -66,9 +66,9 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Active development checkpoint
 
-- Current branch `perf/api-native-resolution-4g` adds retained preview capture and records full-resolution 4 GiB API acceptance from `develop` commit `98ecf38`.
-- The 4 GiB CPU-only API run completed the five-model 5760×3840 request in 3,562.790 s. It fetched a full PNG and preview, matched the previously verified full PNG hash, and peaked at 3,027,701,760 B in a 4 GiB cgroup with zero OOM/limit events. See the [4 GiB API benchmark report](benchmarks/api-native-resolution-4g-2026-10-23.md).
-- Native-size highlight scatter took 3,119.995 s (87.6% of engine time). This is still the dominant CPU bottleneck; the difference against prior runs is uncontrolled and requires profiling, not attribution.
+- Current branch `perf/native-resolution-scatter-profile` adds a repeatable whole-engine CPU profiling harness; the 720×480 real-model smoke completed in 17.706 s with 1,297,387,520 B sampled process-tree peak RSS and 1,499,717,632 B cgroup peak. It correctly recorded that no highlight scatter was required for this downsampled photo. A native-size 5760×3840 profile is running under a 4 GiB cgroup; its results are not yet available.
+- The prior 4 GiB CPU-only API run completed the five-model 5760×3840 request in 3,562.790 s. It fetched a full PNG and preview, matched the previously verified full PNG hash, and peaked at 3,027,701,760 B in a 4 GiB cgroup with zero OOM/limit events. See the [4 GiB API benchmark report](benchmarks/api-native-resolution-4g-2026-10-23.md).
+- Native-size highlight scatter took 3,119.995 s (87.6% of engine time) in that API task. This remains the dominant CPU bottleneck; the difference against prior runs is uncontrolled and requires profiling, not attribution.
 
 ## Historical engine checkpoints
 
