@@ -26,6 +26,7 @@ class ScatterProfiler:
         profile_path: Path,
         *,
         float32_mass_filter: bool = False,
+        fft32_outer_mass_filter: bool = False,
     ) -> None:
         self.module = highlights_module
         self.profile_path = profile_path
@@ -36,9 +37,16 @@ class ScatterProfiler:
         )
         self._scatter = highlights_module.scatter_highlights
         self._field_scatter = getattr(highlights_module, "_scatter_field_optical", None)
+        self._fft_mass_filter = getattr(
+            highlights_module, "_fft32_mass_filter_interior", None
+        )
         self._filter2d = highlights_module.cv2.filter2D
         self.float32_mass_filter = float32_mass_filter
+        self.fft32_outer_mass_filter = fft32_outer_mass_filter
         self.mass_filter_float32_calls = 0
+        self.fft_mass_filter_calls = 0
+        self.fft_mass_filter_seconds = 0.0
+        self.fft_kernel_cache_peak_bytes = 0
         self._installed = False
 
     def install(self) -> None:
@@ -52,6 +60,8 @@ class ScatterProfiler:
             self.module.scatter_highlights = self._scatter
             if self._field_scatter is not None:
                 self.module._scatter_field_optical = self._field_scatter
+            if self._fft_mass_filter is not None:
+                self.module._fft32_mass_filter_interior = self._fft_mass_filter
             self.module.cv2.filter2D = self._filter2d
             self._installed = False
 
@@ -62,6 +72,7 @@ class ScatterProfiler:
 
             def configured_field_scatter(*field_args: Any, **field_kwargs: Any) -> Any:
                 field_kwargs["mass_filter_float32"] = self.float32_mass_filter
+                field_kwargs["mass_filter_fft32_outer"] = self.fft32_outer_mass_filter
                 return self._field_scatter(*field_args, **field_kwargs)
 
         def timed_filter2d(*filter_args: Any, **filter_kwargs: Any) -> Any:
@@ -95,15 +106,37 @@ class ScatterProfiler:
                     item["zero_input_calls"] += 1
                 item["seconds"] += time.perf_counter() - started
 
+        if self._fft_mass_filter is not None:
+
+            def timed_fft_mass_filter(*filter_args: Any, **filter_kwargs: Any) -> Any:
+                started = time.perf_counter()
+                result = self._fft_mass_filter(*filter_args, **filter_kwargs)
+                self.fft_mass_filter_seconds += time.perf_counter() - started
+                self.fft_mass_filter_calls += 1
+                cache = (
+                    filter_args[4]
+                    if len(filter_args) > 4
+                    else filter_kwargs["kernel_spectrum_cache"]
+                )
+                cached_bytes = sum(item.nbytes for item in cache.values())
+                self.fft_kernel_cache_peak_bytes = max(
+                    self.fft_kernel_cache_peak_bytes, cached_bytes
+                )
+                return result
+
         self.module.cv2.filter2D = timed_filter2d
         if self._field_scatter is not None:
             self.module._scatter_field_optical = configured_field_scatter
+        if self._fft_mass_filter is not None:
+            self.module._fft32_mass_filter_interior = timed_fft_mass_filter
         try:
             return self.profile.runcall(self._scatter, *args, **kwargs)
         finally:
             self.module.cv2.filter2D = self._filter2d
             if self._field_scatter is not None:
                 self.module._scatter_field_optical = self._field_scatter
+            if self._fft_mass_filter is not None:
+                self.module._fft32_mass_filter_interior = self._fft_mass_filter
 
     def write(self) -> dict[str, Any]:
         if self.calls == 0:
@@ -147,6 +180,9 @@ class ScatterProfiler:
             "calls": self.calls,
             "profile_file": str(self.profile_path),
             "float32_mass_filter_calls": self.mass_filter_float32_calls,
+            "fft_mass_filter_calls": self.fft_mass_filter_calls,
+            "fft_mass_filter_seconds": self.fft_mass_filter_seconds,
+            "fft_kernel_cache_peak_bytes": self.fft_kernel_cache_peak_bytes,
             "top_functions": top_functions,
             "filter2d_groups": filters,
         }
@@ -220,6 +256,11 @@ def main() -> int:
         action="store_true",
         help="experiment with FP32 single-channel mass convolution (default is FP64)",
     )
+    parser.add_argument(
+        "--fft32-outer-mass-filter",
+        action="store_true",
+        help="experiment with cached FP32 FFT on narrow edge-node mass tiles",
+    )
     parser.add_argument("--subject-point", type=_point, action="append")
     parser.add_argument(
         "--threads",
@@ -265,6 +306,7 @@ def main() -> int:
         highlights,
         args.profile,
         float32_mass_filter=args.fp32_mass_filter,
+        fft32_outer_mass_filter=args.fft32_outer_mass_filter,
     )
     profiler.install()
     started = time.perf_counter()
@@ -312,6 +354,7 @@ def main() -> int:
             "matte_tile_size": options.matte_tile_size,
             "bokeh_row_chunk_height": options.bokeh_row_chunk_height,
             "float32_mass_filter": args.fp32_mass_filter,
+            "fft32_outer_mass_filter": args.fft32_outer_mass_filter,
             "skip_empty_mass": not args.disable_empty_mass_skip,
             "threads": args.threads,
         },

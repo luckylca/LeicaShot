@@ -380,6 +380,43 @@ def _reflected_rows(start: int, stop: int, halo: int, height: int) -> Any:
     return np.asarray(np.where(mod < height, mod, period - mod), dtype=np.intp)
 
 
+def _fft32_mass_filter_interior(
+    source: Any,
+    kernel: Any,
+    target_height: int,
+    target_width: int,
+    kernel_spectrum_cache: dict[tuple[int, int, int], Any],
+) -> Any:
+    """FFT-convolve a halo-padded mass tile with a cached FP32 pupil spectrum."""
+    dft_height = cv2.getOptimalDFTSize(source.shape[0] + kernel.shape[0] - 1)
+    dft_width = cv2.getOptimalDFTSize(source.shape[1] + kernel.shape[1] - 1)
+    cache_key = (id(kernel), dft_height, dft_width)
+    kernel_spectrum = kernel_spectrum_cache.get(cache_key)
+    if kernel_spectrum is None:
+        kernel_pad = np.zeros((dft_height, dft_width), dtype=np.float32)
+        kernel_pad[: kernel.shape[0], : kernel.shape[1]] = kernel[::-1, ::-1]
+        kernel_spectrum = cv2.dft(kernel_pad, flags=cv2.DFT_COMPLEX_OUTPUT)
+        kernel_spectrum_cache[cache_key] = kernel_spectrum
+        del kernel_pad
+
+    source_pad = np.zeros((dft_height, dft_width), dtype=np.float32)
+    source_pad[: source.shape[0], : source.shape[1]] = source
+    source_spectrum = cv2.dft(source_pad, flags=cv2.DFT_COMPLEX_OUTPUT)
+    product = cv2.mulSpectrums(source_spectrum, kernel_spectrum, 0)
+    del source_pad, source_spectrum, kernel_spectrum
+    full = cv2.idft(product, flags=cv2.DFT_SCALE | cv2.DFT_REAL_OUTPUT)
+    del product
+
+    kernel_half_y = kernel.shape[0] // 2
+    kernel_half_x = kernel.shape[1] // 2
+    start_y = 2 * kernel_half_y
+    start_x = 2 * kernel_half_x
+    return full[
+        start_y : start_y + target_height,
+        start_x : start_x + target_width,
+    ]
+
+
 def _source_levels(
     coc: Any, scale: float, cancel_check: Callable[[], None] | None
 ) -> list[int]:
@@ -407,6 +444,7 @@ def _scatter_field_optical(
     *,
     skip_empty_mass: bool = True,
     mass_filter_float32: bool = False,
+    mass_filter_fft32_outer: bool = False,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -441,6 +479,7 @@ def _scatter_field_optical(
                 mass_kernels.append(mass_kernel_cache[kernel_id])
         else:
             mass_kernels = kernels
+        fft_kernel_spectrum_cache: dict[tuple[int, int, int], Any] = {}
         for out_y0 in range(0, height, row_chunk_height):
             _check(cancel_check)
             out_y1 = min(height, out_y0 + row_chunk_height)
@@ -473,15 +512,26 @@ def _scatter_field_optical(
                 if np.any(source_high):
                     weighted = np.empty(source_high.shape, dtype=np.float64)
                     np.multiply(source_high, layer_weight[:, :, None], out=weighted)
-                mass = cv2.filter2D(
-                    layer_weight
-                    if mass_filter_float32
-                    else layer_weight.astype(np.float64),
-                    ddepth=cv2.CV_32F if mass_filter_float32 else cv2.CV_64F,
-                    kernel=mass_kernel,
-                    borderType=cv2.BORDER_REFLECT_101,
-                )
-                node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]
+                use_fft32 = mass_filter_fft32_outer and layer_weight.shape[1] <= 1700
+                if use_fft32:
+                    node_mass = _fft32_mass_filter_interior(
+                        layer_weight,
+                        kernel,
+                        y1 - y0,
+                        x1 - x0,
+                        fft_kernel_spectrum_cache,
+                    )
+                    mass = None
+                else:
+                    mass = cv2.filter2D(
+                        layer_weight
+                        if mass_filter_float32
+                        else layer_weight.astype(np.float64),
+                        ddepth=cv2.CV_32F if mass_filter_float32 else cv2.CV_64F,
+                        kernel=mass_kernel,
+                        borderType=cv2.BORDER_REFLECT_101,
+                    )
+                    node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]
                 node_weight = (
                     wy[y0:y1].astype(np.float64)[:, None]
                     * wx[x0:x1].astype(np.float64)[None, :]
@@ -511,7 +561,6 @@ def _scatter_field_optical(
                     weighted,
                     mass,
                 )
-
             receiver_coc = depth[out_y0:out_y1] * np.float32(radius_scale)
             alpha = np.clip(mass_total, 0.0, 1.0).astype(np.float32)
             behind = np.clip(receiver_coc - np.float32(level + 1), 0.0, 1.0)
@@ -535,6 +584,7 @@ def _scatter_field_optical(
             coverage[out_y0:out_y1] += take
             del mass_total, radiance_total, receiver_coc, alpha, behind, footprint
             del visibility, take, ratio, local, own_ratio, radiance32
+        del fft_kernel_spectrum_cache
         if progress_callback is not None:
             progress_callback((level_index + 1) / len(levels))
 
