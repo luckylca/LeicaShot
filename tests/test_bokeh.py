@@ -436,6 +436,52 @@ def test_bokeh_renderer_integrates_highlight_scatter_after_arnet() -> None:
     assert np.count_nonzero(outside) > 0
 
 
+def test_bokeh_clamps_subject_plate_float_roundoff_before_arnet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import laika.protection as protection
+
+    def fill_with_float32_roundoff(
+        image_float: np.ndarray,
+        _coc: np.ndarray,
+        _alpha: np.ndarray,
+        *,
+        cancel_check: Any = None,
+    ) -> bool:
+        image_float[0, 0, 0] = np.nextafter(np.float32(1.0), np.float32(np.inf))
+        image_float[-1, -1, 1] = np.nextafter(np.float32(0.0), np.float32(-np.inf))
+        return True
+
+    monkeypatch.setattr(
+        protection, "fill_subject_background_inplace", fill_with_float32_roundoff
+    )
+
+    class StrictRGBModel:
+        strategy = "low-memory"
+
+        def infer(self, rgb: np.ndarray, defocus: np.ndarray) -> Any:
+            assert rgb.dtype == np.float32
+            assert float(rgb.min()) >= 0.0
+            assert float(rgb.max()) <= 1.0
+            height, width = rgb.shape[:2]
+            assert defocus.shape == (height, width)
+            return SimpleNamespace(rgb_nchw=rgb.transpose(2, 0, 1)[None].copy())
+
+    rgb = np.full((64, 80, 3), 255, dtype=np.uint8)
+    depth = np.full((64, 80), 0.8, dtype=np.float32)
+    alpha = np.zeros((64, 80), dtype=np.float32)
+    result = render_bokeh(
+        rgb,
+        depth,
+        0.5,
+        2.8,
+        StrictRGBModel(),
+        subject_alpha=alpha,
+    )
+
+    assert result.rgb.shape == rgb.shape
+
+
 def test_balanced_bokeh_keeps_eager_radiance_and_matches_low_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
