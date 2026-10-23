@@ -121,6 +121,36 @@ def _validate_task_count(task_count: int, max_pending_tasks: int) -> None:
         )
 
 
+def _stream_artifact(response: Any, destination: Path | None) -> tuple[int, str]:
+    """Hash a streamed PNG response and optionally retain it on disk."""
+    media_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
+    if media_type != "image/png":
+        raise RuntimeError(f"API image endpoint returned unexpected type: {media_type}")
+    if destination is not None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256()
+    byte_count = 0
+    stream = destination.open("wb") if destination is not None else None
+    try:
+        for block in response.iter_bytes(1024 * 1024):
+            digest.update(block)
+            byte_count += len(block)
+            if stream is not None:
+                stream.write(block)
+    finally:
+        if stream is not None:
+            stream.close()
+    if byte_count == 0:
+        raise RuntimeError("API image endpoint returned an empty PNG")
+    return byte_count, digest.hexdigest()
+
+
+def _indexed_path(path: Path, task_count: int, index: int) -> Path:
+    if task_count == 1:
+        return path
+    return path.with_name(f"{path.stem}-{index + 1}{path.suffix}")
+
+
 def _run_task_request(
     *,
     index: int,
@@ -131,6 +161,7 @@ def _run_task_request(
     timeout_seconds: float,
     poll_interval: float,
     save_output: Path | None,
+    save_preview: Path | None,
     started_at: float,
 ) -> dict[str, Any]:
     import httpx
@@ -173,30 +204,35 @@ def _run_task_request(
             )
         task_completed_elapsed_seconds = time.perf_counter() - started
 
-        download_hash = hashlib.sha256()
-        output_bytes = 0
-        destination = None
-        if save_output is not None:
-            destination = save_output
-            if task_count > 1:
-                destination = save_output.with_name(
-                    f"{save_output.stem}-{index + 1}{save_output.suffix}"
-                )
-            destination.parent.mkdir(parents=True, exist_ok=True)
+        destination = (
+            _indexed_path(save_output, task_count, index)
+            if save_output is not None
+            else None
+        )
         with client.stream(
             "GET", f"{base_url}{status['download_url']}", headers=headers
         ) as response:
             response.raise_for_status()
-            output_stream = destination.open("wb") if destination else None
-            try:
-                for block in response.iter_bytes(1024 * 1024):
-                    download_hash.update(block)
-                    output_bytes += len(block)
-                    if output_stream is not None:
-                        output_stream.write(block)
-            finally:
-                if output_stream is not None:
-                    output_stream.close()
+            output_bytes, output_sha256 = _stream_artifact(response, destination)
+
+        preview_destination = (
+            _indexed_path(save_preview, task_count, index)
+            if save_preview is not None
+            else None
+        )
+        preview_bytes = 0
+        preview_sha256 = None
+        if save_preview is not None:
+            preview_url = status.get("preview_url")
+            if not preview_url:
+                raise RuntimeError("completed API task has no preview URL")
+            with client.stream(
+                "GET", f"{base_url}{preview_url}", headers=headers
+            ) as response:
+                response.raise_for_status()
+                preview_bytes, preview_sha256 = _stream_artifact(
+                    response, preview_destination
+                )
 
     return {
         "task_id": task["id"],
@@ -206,8 +242,11 @@ def _run_task_request(
         "model_results": status["result"],
         "stage_seconds": status["result"].get("stage_seconds", {}),
         "downloaded_output_bytes": output_bytes,
-        "output_sha256": download_hash.hexdigest(),
+        "output_sha256": output_sha256,
         "saved_output": str(destination) if destination else None,
+        "downloaded_preview_bytes": preview_bytes,
+        "preview_sha256": preview_sha256,
+        "saved_preview": str(preview_destination) if preview_destination else None,
     }
 
 
@@ -300,6 +339,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                             save_output=Path(args.save_output)
                             if args.save_output
                             else None,
+                            save_preview=Path(args.save_preview)
+                            if args.save_preview
+                            else None,
                             started_at=started,
                         ),
                         range(args.task_count),
@@ -353,6 +395,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                         ],
                         "output_sha256": task_runs[0]["output_sha256"],
                         "saved_output": task_runs[0]["saved_output"],
+                        "downloaded_preview_bytes": task_runs[0][
+                            "downloaded_preview_bytes"
+                        ],
+                        "preview_sha256": task_runs[0]["preview_sha256"],
+                        "saved_preview": task_runs[0]["saved_preview"],
                     }
                 )
     finally:
@@ -365,6 +412,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             server_logs = server.communicate()[0]
         if server.returncode not in (0, -15, 143) and report is None:
             raise RuntimeError(f"Laika API process failed:\n{server_logs}")
+        if report is None and server_logs:
+            print(f"Laika API server logs:\n{server_logs}", file=sys.stderr)
         if temporary_storage is not None:
             temporary_storage.rmdir()
 
@@ -390,6 +439,11 @@ def main() -> int:
         help="submit this many tasks to one API process; configure workers to match",
     )
     parser.add_argument("--save-output", type=Path)
+    parser.add_argument(
+        "--save-preview",
+        type=Path,
+        help="download and save the API preview PNG as well as the full result",
+    )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.timeout_seconds <= 0 or args.poll_interval <= 0 or args.task_count < 1:
