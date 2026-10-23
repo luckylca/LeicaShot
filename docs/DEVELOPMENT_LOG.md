@@ -320,3 +320,8 @@
 - Synthetic optical-scatter A/B measured maximum intermediate error `1.1920928955078125e-7`; final uint8 composite was exact and the input remained unchanged. The real 5760×3840 five-model/subject output hash also exactly matched PR #61.
 - The no-swap 2 GiB cgroup run completed in 1,501.569 s. Process-tree peak RSS was 1,724,833,792 B; exact cgroup peak 2,004,103,168 B; maximum sampled current 1,934,520,320 B; all max/OOM counters were zero. Relative to PR #61, scatter-stage RSS fell 107,532,288 B and exact cgroup peak fell 29,478,912 B. One scene and one candidate run do not establish safe 2 GiB service headroom or a runtime improvement.
 - Local validation passed: 214 Python tests, Ruff lint, Ruff format check, and `git diff --check`. See [the full experiment report](benchmarks/highlight-scatter-fp32-workspace-2g-2026-10-24.md). Create a PR after reviewing CI; immediately after merge, start the next independent full-system priority.
+
+## 2026-10-24 — PR #62 merged and accumulator-memory branch started
+
+- Squash-merged [PR #62](https://github.com/luckylca/LeicaShot/pull/62) as `08af060` after all eight required checks passed. This preserves the native-size output hash and lowers one-scene 2 GiB cgroup peak by 29,478,912 B.
+- Immediately created `perf/highlight-scatter-accumulator-tiles` from the updated `develop`. The next bounded experiment targets the full-resolution `own` RGB and `coverage` arrays that remain live across all optical-scatter levels. First verify that row-tile traversal preserves per-pixel layer ordering and the real output, then profile it under the same cgroup.
