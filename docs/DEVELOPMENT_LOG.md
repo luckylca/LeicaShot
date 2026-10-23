@@ -320,3 +320,15 @@
 - Synthetic optical-scatter A/B measured maximum intermediate error `1.1920928955078125e-7`; final uint8 composite was exact and the input remained unchanged. The real 5760×3840 five-model/subject output hash also exactly matched PR #61.
 - The no-swap 2 GiB cgroup run completed in 1,501.569 s. Process-tree peak RSS was 1,724,833,792 B; exact cgroup peak 2,004,103,168 B; maximum sampled current 1,934,520,320 B; all max/OOM counters were zero. Relative to PR #61, scatter-stage RSS fell 107,532,288 B and exact cgroup peak fell 29,478,912 B. One scene and one candidate run do not establish safe 2 GiB service headroom or a runtime improvement.
 - Local validation passed: 214 Python tests, Ruff lint, Ruff format check, and `git diff --check`. See [the full experiment report](benchmarks/highlight-scatter-fp32-workspace-2g-2026-10-24.md). Create a PR after reviewing CI; immediately after merge, start the next independent full-system priority.
+
+## 2026-10-24 — PR #62 merged and accumulator-memory branch started
+
+- Squash-merged [PR #62](https://github.com/luckylca/LeicaShot/pull/62) as `08af060` after all eight required checks passed. This preserves the native-size output hash and lowers one-scene 2 GiB cgroup peak by 29,478,912 B.
+- Immediately created `perf/highlight-scatter-accumulator-tiles` from the updated `develop`. The next bounded experiment targets the full-resolution `own` RGB and `coverage` arrays that remain live across all optical-scatter levels. First verify that row-tile traversal preserves per-pixel layer ordering and the real output, then profile it under the same cgroup.
+
+## 2026-10-24 — Reject row-major scatter accumulators
+
+- The row-band-major candidate completed the full CPU pipeline on the 5760×3840 photo and matched PR #62's PNG SHA exactly. It took 1,763.941 s (PR #62: 1,501.569 s); scatter took 1,435.059 s (PR #62: 1,178.114 s).
+- Its process-tree peak was 1,940,873,216 B, with the same high-water in highlight scatter; PR #62 recorded 1,724,833,792 B whole-task RSS and 1,659,846,656 B scatter-stage RSS. Exact cgroup peak reached the 2,147,483,648 B limit, sampled current came within 4,096 B of the cap, and `memory.events max` incremented 113 times. OOM counters remained zero.
+- Reverted candidate code commit `31906f0` as `d6b9bbf`. Local candidate validation had passed 214 tests and Ruff. The full configuration, model hashes, output verification and telemetry are in the [negative-result report](benchmarks/scatter-row-major-accumulators-rejected-2g-2026-10-24.md).
+- Next: merge this useful negative result as documentation, then start second-scene validation of PR #62 and profile the remaining nonzero mass-filter bottleneck.

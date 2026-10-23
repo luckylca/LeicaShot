@@ -59,11 +59,17 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - The renderer releases its source HWC float32 radiance immediately after field-optical scatter returns, before softening and final compositing. It drops the `HighlightSplit` holder early as well, so Balanced mode does not retain a second reference. Weak-reference tests cover both strategies; their image calculations remain the same.
 - A complete source-verified 5760×3840 five-model plus subject task completed under a no-swap 2 GiB cgroup with exact output SHA `0a6282df408319950f0bd4c8f56bcfce78ed9e7eba95ce9c50b2c70f5555ade2`. The softening-stage process-tree peak fell by 263,143,424 B and exact cgroup peak by 112,025,600 B compared with PR #60. The new process-tree high-water is in scatter. Full settings and limitations are in the [radiance lifetime report](benchmarks/highlight-radiance-release-2g-2026-10-24.md).
 
-## Float32 workspace in field-optical scatter on `perf/highlight-scatter-live-buffers`
+## Float32 workspace in field-optical scatter (merged PR #62)
 
 - `_scatter_field_optical` reuses its float32 advanced-index tile copy as the weighted radiance workspace and filters each node's RGB tile at float32; accumulated scene radiance remains float64. This removes the separate float64 weighted and filtered-radiance tile buffers.
 - A source-verified 5760×3840 five-model/subject task at no-swap 2 GiB completed with the same PNG SHA as PR #61. Scatter-stage process-tree peak fell 107,532,288 B, whole-task process-tree peak fell 42,545,152 B, exact cgroup `memory.peak` fell 29,478,912 B, and largest 1-second cgroup current fell 85,499,904 B. All cgroup max/OOM counters remained zero.
 - On a deterministic scatter fixture, maximum absolute intermediate difference from the FP64 route was `1.1920928955078125e-7`; the final uint8 composite was byte-identical. Native-size full-pipeline times were effectively unchanged and are not a speed claim. This is one real scene; 2 GiB remains experimental. See the [measurement report](benchmarks/highlight-scatter-fp32-workspace-2g-2026-10-24.md).
+
+## Rejected: row-major tile-local scatter accumulators
+
+- Candidate `31906f0` moved the all-level loop inside the output row-band loop and retained the full-frame output while using row-local `own` and coverage arrays. The native full pipeline preserved its PNG hash but raised scatter-stage process-tree RSS by 281,026,560 B, raised exact cgroup peak to the 2 GiB hard limit (113 `max` events), and increased scatter time by 256.946 s. Whole-task time rose 17.47%.
+- The candidate was reverted by `d6b9bbf`; merged PR #62's level-major implementation remains active. Full environment and telemetry are in the [rejected experiment report](benchmarks/scatter-row-major-accumulators-rejected-2g-2026-10-24.md).
+- Next: validate PR #62 on another real scene, then profile nonzero mass-filter cost for a different CPU/memory approach.
 
 ## Exact-zero highlight scatter optimization on `perf/highlight-scatter-cpu`
 
