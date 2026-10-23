@@ -54,6 +54,11 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - Highlight stage progress and cancellation checks are wired through the same SDK callback. Buffers are owned by one `render_bokeh` call and released before export; no model or image asset was added to Git.
 - In `ProcessingOptions`, `bokeh_row_chunk_height=512` gave a useful CPU/memory tradeoff on the measured 2048×1365 photo. The current default remains 128 to preserve the lower-working-set baseline; deployments can explicitly select another value. Neither setting is asserted to be optimal on other hosts.
 
+## Highlight radiance lifetime on `perf/highlight-radiance-lifetime`
+
+- The renderer releases its source HWC float32 radiance immediately after field-optical scatter returns, before softening and final compositing. It drops the `HighlightSplit` holder early as well, so Balanced mode does not retain a second reference. Weak-reference tests cover both strategies; their image calculations remain the same.
+- A complete source-verified 5760×3840 five-model plus subject task completed under a no-swap 2 GiB cgroup with exact output SHA `0a6282df408319950f0bd4c8f56bcfce78ed9e7eba95ce9c50b2c70f5555ade2`. The softening-stage process-tree peak fell by 263,143,424 B and exact cgroup peak by 112,025,600 B compared with PR #60. The new process-tree high-water is in scatter. Full settings and limitations are in the [radiance lifetime report](benchmarks/highlight-radiance-release-2g-2026-10-24.md).
+
 ## Exact-zero highlight scatter optimization on `perf/highlight-scatter-cpu`
 
 - Merged to `develop` in PR #32 as `a503d0b`; all seven cross-platform Python and Web CI checks passed.

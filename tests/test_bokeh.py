@@ -486,17 +486,25 @@ def test_balanced_bokeh_keeps_eager_radiance_and_matches_low_memory(
     assert balanced.stage_seconds["highlight_radiance"] == 0.0
 
 
+@pytest.mark.parametrize("strategy", ("low-memory", "balanced"))
 def test_highlight_radiance_is_released_before_softening(
     monkeypatch: pytest.MonkeyPatch,
+    strategy: str,
 ) -> None:
-    radiance_ref: weakref.ReferenceType[np.ndarray] | None = None
+    radiance_refs: list[weakref.ReferenceType[np.ndarray]] = []
+    split_builder = highlights.extract_highlights
     extract_radiance = highlights.extract_highlight_radiance
     soften = highlights.soften_highlights_inplace
 
+    def capture_split(*args: Any, **kwargs: Any) -> highlights.HighlightSplit:
+        split = split_builder(*args, **kwargs)
+        if split.highlight_linear is not None:
+            radiance_refs.append(weakref.ref(split.highlight_linear))
+        return split
+
     def capture_radiance(*args: Any, **kwargs: Any) -> np.ndarray:
-        nonlocal radiance_ref
         radiance = extract_radiance(*args, **kwargs)
-        radiance_ref = weakref.ref(radiance)
+        radiance_refs.append(weakref.ref(radiance))
         return radiance
 
     def assert_source_released(
@@ -504,15 +512,17 @@ def test_highlight_radiance_is_released_before_softening(
         coc: np.ndarray,
         **kwargs: Any,
     ) -> np.ndarray:
-        assert radiance_ref is not None
-        assert radiance_ref() is None
+        assert radiance_refs
+        assert all(radiance_ref() is None for radiance_ref in radiance_refs)
         return soften(scattered, coc, **kwargs)
 
+    monkeypatch.setattr(highlights, "extract_highlights", capture_split)
     monkeypatch.setattr(highlights, "extract_highlight_radiance", capture_radiance)
     monkeypatch.setattr(highlights, "soften_highlights_inplace", assert_source_released)
 
     class IdentityModel:
-        strategy = "low-memory"
+        def __init__(self, model_strategy: str) -> None:
+            self.strategy = model_strategy
 
         def infer(self, rgb: np.ndarray, defocus: np.ndarray) -> Any:
             height, width = rgb.shape[:2]
@@ -529,12 +539,13 @@ def test_highlight_radiance_is_released_before_softening(
         depth,
         0.1,
         2.8,
-        IdentityModel(),
+        IdentityModel(strategy),
         row_chunk_height=17,
     )
 
     assert result.rgb.shape == rgb.shape
-    assert radiance_ref is not None and radiance_ref() is None
+    assert radiance_refs
+    assert all(radiance_ref() is None for radiance_ref in radiance_refs)
 
 
 def test_explicit_rgb_resize_uses_opencv_cubic_and_keeps_rgb_order() -> None:
