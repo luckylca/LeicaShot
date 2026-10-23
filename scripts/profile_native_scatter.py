@@ -20,7 +20,13 @@ import psutil
 class ScatterProfiler:
     """Profile one scatter call and time OpenCV filters by kernel geometry."""
 
-    def __init__(self, highlights_module: Any, profile_path: Path) -> None:
+    def __init__(
+        self,
+        highlights_module: Any,
+        profile_path: Path,
+        *,
+        float32_mass_filter: bool = False,
+    ) -> None:
         self.module = highlights_module
         self.profile_path = profile_path
         self.profile = cProfile.Profile()
@@ -29,7 +35,10 @@ class ScatterProfiler:
             lambda: {"calls": 0, "zero_input_calls": 0, "seconds": 0.0}
         )
         self._scatter = highlights_module.scatter_highlights
+        self._field_scatter = getattr(highlights_module, "_scatter_field_optical", None)
         self._filter2d = highlights_module.cv2.filter2D
+        self.float32_mass_filter = float32_mass_filter
+        self.mass_filter_float32_calls = 0
         self._installed = False
 
     def install(self) -> None:
@@ -41,11 +50,19 @@ class ScatterProfiler:
     def restore(self) -> None:
         if self._installed:
             self.module.scatter_highlights = self._scatter
+            if self._field_scatter is not None:
+                self.module._scatter_field_optical = self._field_scatter
             self.module.cv2.filter2D = self._filter2d
             self._installed = False
 
     def _profiled_scatter(self, *args: Any, **kwargs: Any) -> Any:
         self.calls += 1
+
+        if self._field_scatter is not None:
+
+            def configured_field_scatter(*field_args: Any, **field_kwargs: Any) -> Any:
+                field_kwargs["mass_filter_float32"] = self.float32_mass_filter
+                return self._field_scatter(*field_args, **field_kwargs)
 
         def timed_filter2d(*filter_args: Any, **filter_kwargs: Any) -> Any:
             source = filter_args[0]
@@ -63,6 +80,13 @@ class ScatterProfiler:
             )
             started = time.perf_counter()
             try:
+                if (
+                    self.float32_mass_filter
+                    and source.ndim == 2
+                    and source.dtype.name == "float32"
+                    and depth == self.module.cv2.CV_32F
+                ):
+                    self.mass_filter_float32_calls += 1
                 return self._filter2d(*filter_args, **filter_kwargs)
             finally:
                 item = self.filter_groups[key]
@@ -72,10 +96,14 @@ class ScatterProfiler:
                 item["seconds"] += time.perf_counter() - started
 
         self.module.cv2.filter2D = timed_filter2d
+        if self._field_scatter is not None:
+            self.module._scatter_field_optical = configured_field_scatter
         try:
             return self.profile.runcall(self._scatter, *args, **kwargs)
         finally:
             self.module.cv2.filter2D = self._filter2d
+            if self._field_scatter is not None:
+                self.module._scatter_field_optical = self._field_scatter
 
     def write(self) -> dict[str, Any]:
         if self.calls == 0:
@@ -118,6 +146,7 @@ class ScatterProfiler:
         return {
             "calls": self.calls,
             "profile_file": str(self.profile_path),
+            "float32_mass_filter_calls": self.mass_filter_float32_calls,
             "top_functions": top_functions,
             "filter2d_groups": filters,
         }
@@ -186,6 +215,11 @@ def main() -> int:
     parser.add_argument("--aperture", type=float, default=2.8)
     parser.add_argument("--matte-tile-size", type=int, default=512)
     parser.add_argument("--bokeh-row-chunk-height", type=int, default=256)
+    parser.add_argument(
+        "--fp32-mass-filter",
+        action="store_true",
+        help="experiment with FP32 single-channel mass convolution (default is FP64)",
+    )
     parser.add_argument("--subject-point", type=_point, action="append")
     parser.add_argument(
         "--threads",
@@ -227,7 +261,11 @@ def main() -> int:
         matte_tile_size=args.matte_tile_size,
         bokeh_row_chunk_height=args.bokeh_row_chunk_height,
     )
-    profiler = ScatterProfiler(highlights, args.profile)
+    profiler = ScatterProfiler(
+        highlights,
+        args.profile,
+        float32_mass_filter=args.fp32_mass_filter,
+    )
     profiler.install()
     started = time.perf_counter()
     cpu_before = psutil.Process().cpu_times()
@@ -273,6 +311,7 @@ def main() -> int:
             "subject_points": [list(point) for point in points],
             "matte_tile_size": options.matte_tile_size,
             "bokeh_row_chunk_height": options.bokeh_row_chunk_height,
+            "float32_mass_filter": args.fp32_mass_filter,
             "skip_empty_mass": not args.disable_empty_mass_skip,
             "threads": args.threads,
         },
