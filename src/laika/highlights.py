@@ -494,11 +494,9 @@ def _scatter_field_optical(
     mass_filter_fft32_outer: bool = False,
     float32_radiance_workspace: bool = True,
 ) -> Any:
-    """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
+    """Reference 5×5 tent-interpolated pupil with row-local accumulators."""
     height, width = depth.shape
     output = np.zeros_like(high)
-    own = np.zeros_like(high)
-    coverage = np.zeros((height, width), dtype=np.float32)
     xs = _field_axis_nodes(width)
     ys = _field_axis_nodes(height)
     nodes: list[tuple[Any, ...]] = []
@@ -509,14 +507,15 @@ def _scatter_field_optical(
             )
     pupil_shapes = [node[8] for node in nodes]
 
-    for level_index, level in enumerate(levels):
-        _check(cancel_check)
-        radius = abs(level)
+    kernels_by_radius: dict[int, list[Any]] = {}
+    mass_kernels_by_radius: dict[int, list[Any]] = {}
+    for radius in sorted({abs(level) for level in levels}):
         if radius == 0:
             zero_kernel = aperture_kernel(0, aperture).astype(np.float64)
             kernels = [zero_kernel] * len(nodes)
         else:
             kernels = _field_pupil_kernels(pupil_shapes, radius, aperture)
+        kernels_by_radius[radius] = kernels
         if mass_filter_float32:
             mass_kernel_cache: dict[int, Any] = {}
             mass_kernels = []
@@ -525,13 +524,23 @@ def _scatter_field_optical(
                 if kernel_id not in mass_kernel_cache:
                     mass_kernel_cache[kernel_id] = kernel.astype(np.float32)
                 mass_kernels.append(mass_kernel_cache[kernel_id])
-        else:
-            mass_kernels = kernels
-        fft_kernel_spectrum_cache: dict[tuple[int, int, int], Any] = {}
-        for out_y0 in range(0, height, row_chunk_height):
+            mass_kernels_by_radius[radius] = mass_kernels
+
+    row_bands = list(range(0, height, row_chunk_height))
+    for band_index, out_y0 in enumerate(row_bands):
+        _check(cancel_check)
+        out_y1 = min(height, out_y0 + row_chunk_height)
+        row_count = out_y1 - out_y0
+        output_band = output[out_y0:out_y1]
+        own_band = np.zeros_like(output_band)
+        coverage_band = np.zeros((row_count, width), dtype=np.float32)
+
+        for level in levels:
             _check(cancel_check)
-            out_y1 = min(height, out_y0 + row_chunk_height)
-            row_count = out_y1 - out_y0
+            radius = abs(level)
+            kernels = kernels_by_radius[radius]
+            mass_kernels = mass_kernels_by_radius.get(radius, kernels)
+            fft_kernel_spectrum_cache: dict[tuple[int, int, int], Any] = {}
             mass_total = np.zeros((row_count, width), dtype=np.float64)
             radiance_total = np.zeros((row_count, width, 3), dtype=np.float64)
 
@@ -644,7 +653,7 @@ def _scatter_field_optical(
             visibility = 1.0 - behind * (1.0 - footprint)
             take = np.minimum(
                 alpha * visibility,
-                np.maximum(0.0, 1.0 - coverage[out_y0:out_y1]),
+                np.maximum(0.0, 1.0 - coverage_band),
             )
             ratio = np.zeros_like(alpha)
             np.divide(take, alpha, out=ratio, where=alpha > np.float32(1e-8))
@@ -652,16 +661,17 @@ def _scatter_field_optical(
             own_ratio = np.zeros_like(alpha)
             np.divide(local, alpha, out=own_ratio, where=alpha > np.float32(1e-8))
             radiance32 = np.maximum(0.0, radiance_total).astype(np.float32)
-            output[out_y0:out_y1] += radiance32 * ratio[:, :, None]
-            own[out_y0:out_y1] += radiance32 * own_ratio[:, :, None]
-            coverage[out_y0:out_y1] += take
+            output_band += radiance32 * ratio[:, :, None]
+            own_band += radiance32 * own_ratio[:, :, None]
+            coverage_band += take
             del mass_total, radiance_total, receiver_coc, alpha, behind, footprint
             del visibility, take, ratio, local, own_ratio, radiance32
-        del fft_kernel_spectrum_cache
-        if progress_callback is not None:
-            progress_callback((level_index + 1) / len(levels))
 
-    _combine_own_into_output(output, own, coverage, row_chunk_height)
+        _combine_own_into_output(output_band, own_band, coverage_band, row_chunk_height)
+        if progress_callback is not None:
+            progress_callback((band_index + 1) / len(row_bands))
+        del output_band, own_band, coverage_band
+
     _check(cancel_check)
     return output
 
