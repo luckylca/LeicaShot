@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark a real task through a local Uvicorn API worker."""
+"""Benchmark real tasks through one local Uvicorn API worker pool."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -110,6 +111,106 @@ def _server_process_tree(pid: int) -> list[Any]:
         return []
 
 
+def _validate_task_count(task_count: int, max_pending_tasks: int) -> None:
+    if task_count < 1:
+        raise ValueError("task count must be positive")
+    if task_count > max_pending_tasks:
+        raise ValueError(
+            f"task count {task_count} exceeds API admission capacity "
+            f"{max_pending_tasks}"
+        )
+
+
+def _run_task_request(
+    *,
+    index: int,
+    task_count: int,
+    source: Path,
+    body: str,
+    base_url: str,
+    timeout_seconds: float,
+    poll_interval: float,
+    save_output: Path | None,
+    started_at: float,
+) -> dict[str, Any]:
+    import httpx
+
+    started = time.perf_counter()
+    with httpx.Client(timeout=30.0) as client:
+        media_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+        with source.open("rb") as image_file:
+            created = client.post(
+                f"{base_url}/api/v1/tasks",
+                data={"options": body},
+                files={"file": (source.name, image_file, media_type)},
+            )
+        if created.status_code != 202:
+            raise RuntimeError(
+                f"API task {index + 1} creation returned {created.status_code}: "
+                f"{created.text}"
+            )
+        task = created.json()
+        headers = {"X-Laika-Task-Token": task["access_token"]}
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            status_response = client.get(
+                f"{base_url}{task['status_url']}", headers=headers
+            )
+            status_response.raise_for_status()
+            status = status_response.json()
+            if status["status"] in ("completed", "failed", "cancelled"):
+                break
+            time.sleep(poll_interval)
+        else:
+            client.post(f"{base_url}{task['cancel_url']}", headers=headers)
+            raise TimeoutError(
+                f"API task {index + 1} exceeded {timeout_seconds} seconds"
+            )
+        task_wall_seconds = time.perf_counter() - started
+        if status["status"] != "completed":
+            raise RuntimeError(
+                f"API task {index + 1} {status['status']}: {status['error']}"
+            )
+        task_completed_elapsed_seconds = time.perf_counter() - started
+
+        download_hash = hashlib.sha256()
+        output_bytes = 0
+        destination = None
+        if save_output is not None:
+            destination = save_output
+            if task_count > 1:
+                destination = save_output.with_name(
+                    f"{save_output.stem}-{index + 1}{save_output.suffix}"
+                )
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        with client.stream(
+            "GET", f"{base_url}{status['download_url']}", headers=headers
+        ) as response:
+            response.raise_for_status()
+            output_stream = destination.open("wb") if destination else None
+            try:
+                for block in response.iter_bytes(1024 * 1024):
+                    download_hash.update(block)
+                    output_bytes += len(block)
+                    if output_stream is not None:
+                        output_stream.write(block)
+            finally:
+                if output_stream is not None:
+                    output_stream.close()
+
+    return {
+        "task_id": task["id"],
+        "task_wall_seconds": task_wall_seconds,
+        "task_completed_elapsed_seconds": task_completed_elapsed_seconds,
+        "task_finished_elapsed_seconds": time.perf_counter() - started_at,
+        "model_results": status["result"],
+        "stage_seconds": status["result"].get("stage_seconds", {}),
+        "downloaded_output_bytes": output_bytes,
+        "output_sha256": download_hash.hexdigest(),
+        "saved_output": str(destination) if destination else None,
+    }
+
+
 def run(args: argparse.Namespace) -> dict[str, Any]:
     import httpx
     import psutil
@@ -122,6 +223,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(options, dict):
         raise ValueError("--options must be a JSON object")
     settings = ApiSettings.from_environment()
+    _validate_task_count(args.task_count, settings.max_pending_tasks)
     if "strategy" not in options:
         options["strategy"] = settings.default_strategy
     if "mode" not in options:
@@ -184,57 +286,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 raise RuntimeError(f"Laika API exited during startup:\n{logs}")
 
             started = time.perf_counter()
-            media_type = (
-                mimetypes.guess_type(source.name)[0] or "application/octet-stream"
-            )
-            with source.open("rb") as image_file:
-                created = client.post(
-                    f"{base_url}/api/v1/tasks",
-                    data={"options": body},
-                    files={"file": (source.name, image_file, media_type)},
+            with ThreadPoolExecutor(max_workers=args.task_count) as executor:
+                task_runs = list(
+                    executor.map(
+                        lambda index: _run_task_request(
+                            index=index,
+                            task_count=args.task_count,
+                            source=source,
+                            body=body,
+                            base_url=base_url,
+                            timeout_seconds=args.timeout_seconds,
+                            poll_interval=args.poll_interval,
+                            save_output=Path(args.save_output)
+                            if args.save_output
+                            else None,
+                            started_at=started,
+                        ),
+                        range(args.task_count),
+                    )
                 )
-            if created.status_code != 202:
-                raise RuntimeError(
-                    f"API task creation returned {created.status_code}: {created.text}"
-                )
-            task = created.json()
-            headers = {"X-Laika-Task-Token": task["access_token"]}
-            deadline = time.monotonic() + args.timeout_seconds
-            while time.monotonic() < deadline:
-                status_response = client.get(
-                    f"{base_url}{task['status_url']}", headers=headers
-                )
-                status_response.raise_for_status()
-                status = status_response.json()
-                if status["status"] in ("completed", "failed", "cancelled"):
-                    break
-                time.sleep(args.poll_interval)
-            else:
-                client.post(f"{base_url}{task['cancel_url']}", headers=headers)
-                raise TimeoutError(f"API task exceeded {args.timeout_seconds} seconds")
             task_wall_seconds = time.perf_counter() - started
-            if status["status"] != "completed":
-                raise RuntimeError(f"API task {status['status']}: {status['error']}")
-
-            download_hash = hashlib.sha256()
-            output_bytes = 0
-            with client.stream(
-                "GET", f"{base_url}{status['download_url']}", headers=headers
-            ) as response:
-                response.raise_for_status()
-                destination = Path(args.save_output) if args.save_output else None
-                if destination is not None:
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                output_stream = destination.open("wb") if destination else None
-                try:
-                    for block in response.iter_bytes(1024 * 1024):
-                        download_hash.update(block)
-                        output_bytes += len(block)
-                        if output_stream is not None:
-                            output_stream.write(block)
-                finally:
-                    if output_stream is not None:
-                        output_stream.close()
 
             host_info = {
                 "platform": platform.platform(),
@@ -255,9 +326,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     "python": sys.version,
                     "platform": platform.platform(),
                 },
-                "model_results": status["result"],
-                "stage_seconds": status["result"].get("stage_seconds", {}),
                 "task_wall_seconds": task_wall_seconds,
+                "task_count": args.task_count,
+                "scheduler": {
+                    "max_workers": settings.max_workers,
+                    "queue_capacity": settings.queue_capacity,
+                    "max_pending_tasks": settings.max_pending_tasks,
+                },
+                "tasks": task_runs,
                 "server_process_tree_peak_rss_bytes": peak.peak_rss_bytes,
                 "server_process_tree_peak_uss_bytes": peak.peak_uss_bytes,
                 "server_cpu_seconds": max(
@@ -266,10 +342,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "server_process_count": len(_server_process_tree(server.pid)),
                 "cgroup_v2_before": cgroup_before,
                 "cgroup_v2_after": _cgroup_v2_snapshot(),
-                "downloaded_output_bytes": output_bytes,
-                "output_sha256": download_hash.hexdigest(),
-                "saved_output": str(destination) if destination else None,
             }
+            if args.task_count == 1:
+                report.update(
+                    {
+                        "model_results": task_runs[0]["model_results"],
+                        "stage_seconds": task_runs[0]["stage_seconds"],
+                        "downloaded_output_bytes": task_runs[0][
+                            "downloaded_output_bytes"
+                        ],
+                        "output_sha256": task_runs[0]["output_sha256"],
+                        "saved_output": task_runs[0]["saved_output"],
+                    }
+                )
     finally:
         if server.poll() is None:
             server.terminate()
@@ -298,11 +383,17 @@ def main() -> int:
     )
     parser.add_argument("--timeout-seconds", type=float, default=1800.0)
     parser.add_argument("--poll-interval", type=float, default=0.2)
+    parser.add_argument(
+        "--task-count",
+        type=int,
+        default=1,
+        help="submit this many tasks to one API process; configure workers to match",
+    )
     parser.add_argument("--save-output", type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
-    if args.timeout_seconds <= 0 or args.poll_interval <= 0:
-        parser.error("timeout and poll interval must be positive")
+    if args.timeout_seconds <= 0 or args.poll_interval <= 0 or args.task_count < 1:
+        parser.error("timeout, poll interval, and task count must be positive")
     report = run(args)
     serialized = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if args.report:
