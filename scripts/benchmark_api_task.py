@@ -412,6 +412,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             server_logs = server.communicate()[0]
         if server.returncode not in (0, -15, 143) and report is None:
             raise RuntimeError(f"Laika API process failed:\n{server_logs}")
+        if report is None and server_logs:
+            print(f"Laika API server logs:\n{server_logs}", file=sys.stderr)
         if temporary_storage is not None:
             temporary_storage.rmdir()
 
