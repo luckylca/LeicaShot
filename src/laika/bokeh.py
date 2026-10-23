@@ -1031,6 +1031,7 @@ def render_bokeh(
 
         if composite is None:
             composite = enlarged
+            enlarged = None
         elif not stream_blend:
             for row_start in range(0, height, row_chunk_height):
                 row_stop = min(height, row_start + row_chunk_height)
@@ -1044,7 +1045,7 @@ def render_bokeh(
                 current = composite[row_start:row_stop]
                 current *= 1.0 - weight
                 current += enlarged[row_start:row_stop] * weight
-            del enlarged
+            enlarged = None
 
         scales.append(actual_scale)
         if pass_callback is not None:
@@ -1070,6 +1071,12 @@ def render_bokeh(
         np.rint(mixed, out=mixed)
         final_rgb[row_start:row_stop] = mixed.astype(np.uint8)
     stage_seconds["composite"] = time.perf_counter() - stage_started
+    # ARNet's float32 working frames are no longer used once final_rgb is ready.
+    # Release them before highlight recovery/scatter, which has its own large
+    # full-resolution buffers and is the next peak-memory stage.
+    release_started = time.perf_counter()
+    del image_float, composite, enlarged, plate_coc
+    stage_seconds["release_arnet_buffers"] = time.perf_counter() - release_started
     if bool(np.any(highlight_linear)):
         if stage_callback is not None:
             stage_callback("highlight-recovery", 0.0)
@@ -1141,7 +1148,7 @@ def render_bokeh(
             cancel_check=cancel_check,
         )
         stage_seconds["subject_composite"] = time.perf_counter() - composite_started
-    del image_float, composite, coc, plate_coc, split, base_rgb, highlight_linear
+    del coc, split, base_rgb, highlight_linear
     if cancel_check is not None:
         cancel_check()
     return BokehRenderResult(
