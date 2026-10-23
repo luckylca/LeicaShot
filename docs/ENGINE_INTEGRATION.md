@@ -4,7 +4,7 @@ Updated: 2026-10-23
 
 ## Current optimization checkpoint
 
-PR #44's native-resolution A/B confirmed the exact-zero mass skip with identical decoded PNGs and a 43.92% lower task time. The active `perf/cpu-thread-scaling` branch has a same-photo 1440×960 five-model smoke: two threads finished 35.6% faster than one, with exact pixels and 17.4 MB higher cgroup peak. The 5760×3840 run is required before recommending that setting for Low Memory. See the [zero-mass skip report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
+PR #44's native-resolution A/B confirmed the exact-zero mass skip with identical decoded PNGs and a 43.92% lower task time. A subsequent 5760×3840 thread comparison found two threads 2.56% faster overall but 7.47% higher process CPU time; one output channel differed by one LSB. Keep one thread as the Low Memory default. See the [thread scaling report](benchmarks/cpu-thread-scaling-native-4g-2026-10-23.md) and [zero-mass skip report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
 
 ## Intended Python call
 

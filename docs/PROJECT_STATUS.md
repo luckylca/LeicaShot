@@ -6,7 +6,7 @@ Updated: 2026-10-23
 
 - Stable integration branch: `develop`, at merge commit `3c6810a` after PR #44.
 - Most recent merged PR: [#44, skip empty highlight mass filters](https://github.com/luckylca/LeicaShot/pull/44); all eight required CI jobs passed.
-- Active branch: `perf/cpu-thread-scaling`, based on `develop` at `3c6810a`. A same-photo 1440×960 five-model smoke completed with exact output parity at one and two threads; the two-thread run was 35.6% faster overall and used 17.4 MB more cgroup peak. Full-resolution two-thread CPU/memory/quality measurement is pending.
+- Active branch: `perf/cpu-thread-scaling`, based on `develop` at `3c6810a`. The full-resolution two-thread task completed in 1,529.419 s versus PR #44's one-thread 1,569.613 s (−2.56%); scatter was 1.50% faster. cgroup peak was 2,830,872,576 B with zero OOM events. One output channel value differed by one LSB (MAE 1.507e−8, max 1); retain one thread as Low Memory default. See the [thread scaling report](benchmarks/cpu-thread-scaling-native-4g-2026-10-23.md).
 - PR #44's full-resolution A/B on the same five-model 5760×3840 CPU task: 2,798.908 s / 2,896,424,960 B cgroup peak with the exact-zero skip disabled; 1,569.613 s / 2,844,807,168 B with it enabled. Scatter time fell 48.92%, 32,718 zero-input mass filters were avoided, outputs were byte-identical, and both cgroups recorded zero OOM/limit events. See the [A/B report](benchmarks/scatter-skip-empty-mass-4g-2026-10-23.md).
 - PR #43's full-resolution profile completed in 3,164.246 s under a 4 GiB cgroup, with a 2,913,480,704 B cgroup peak and 2,521,657,344 B process-tree RSS. It recorded 53,940 single-channel mass-filter calls (1,497.169 s). See the [profile report](benchmarks/native-resolution-scatter-profile-2026-10-23.md).
 - Current API concurrency measurements use the same five-model + highlights 1620×1080 request. One worker/task completed in 81.520 s at 1,867,460,608 B cgroup peak in a 3 GiB cgroup. Two workers/tasks completed in 109.291 s at 3,129,069,568 B (97.14% of the limit), leaving 87.9 MiB and zero OOM events. Keep the one-worker default at this tier; two workers do not have adequate headroom for larger inputs.
@@ -91,4 +91,4 @@ Model weights and photographs stay outside Git. Project-use authorization is con
 
 ## Next action
 
-Complete the `threads=2` full-resolution five-model 5760×3840 CPU run on `perf/cpu-thread-scaling`; compare it with PR #44's one-thread run for whole-task/stage time, RSS, cgroup peak/events, and exact output parity. Keep Low Memory at one thread unless native-size measurements show a safe, meaningful benefit. Then profile the remaining nonzero mass-filter bottleneck.
+Finish local/remote CI and merge the thread-scaling evidence without changing the Low Memory default. Then create a separate performance branch to investigate faster exact evaluation of the remaining nonzero mass filters; use PR #44's full-resolution output as the byte-for-byte reference.
