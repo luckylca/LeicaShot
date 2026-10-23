@@ -7,6 +7,7 @@ from laika import highlights
 from laika.highlights import (
     aperture_kernel,
     composite_highlights,
+    extract_highlight_radiance,
     extract_highlights,
     recover_clipped_highlights_inplace,
     scatter_highlights,
@@ -38,6 +39,30 @@ def test_highlight_split_extracts_a_compact_point_source() -> None:
     assert int(split.base_rgb[0, 0, 0]) == 0
     assert np.isfinite(split.highlight_linear).all()
     assert float(split.highlight_linear.min()) >= 0.0
+
+
+def test_deferred_highlight_radiance_matches_eager_split_exactly() -> None:
+    rgb = np.zeros((257, 263, 3), dtype=np.uint8)
+    rgb[126:131, 128:134] = (255, 220, 160)
+    eager = extract_highlights(rgb, row_chunk_height=31)
+    base_only = extract_highlights(
+        rgb,
+        row_chunk_height=31,
+        include_radiance=False,
+    )
+    progress: list[float] = []
+
+    assert base_only.highlight_linear is None
+    np.testing.assert_array_equal(base_only.base_rgb, eager.base_rgb)
+    deferred = extract_highlight_radiance(
+        rgb,
+        base_only.base_rgb,
+        row_chunk_height=31,
+        progress_callback=progress.append,
+    )
+
+    np.testing.assert_array_equal(deferred, eager.highlight_linear)
+    assert progress[-1] == 1.0
 
 
 def test_aperture_kernel_is_symmetric_normalized_and_aperture_shaped() -> None:

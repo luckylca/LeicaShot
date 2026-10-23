@@ -732,6 +732,8 @@ class LaikaProcessingEngine:
                         progress = 0.68 + 0.01 * fraction
                     elif stage == "highlight-recovery":
                         progress = 0.82 + 0.01 * fraction
+                    elif stage == "highlight-radiance":
+                        progress = 0.81 + 0.01 * fraction
                     elif stage == "highlight-scatter":
                         progress = 0.83 + 0.08 * fraction
                     elif stage == "highlight-softening":

@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from laika import highlights
 from laika.bokeh import (
     BOKEH_SOURCE_CHECKPOINT_SHA256,
     BokehInferenceError,
@@ -396,6 +397,7 @@ def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() ->
     assert "optics" in result.stage_seconds
     assert "composite" in result.stage_seconds
     assert "highlight_extraction" in result.stage_seconds
+    assert "highlight_radiance" in result.stage_seconds
     assert "highlight_scatter" in result.stage_seconds
 
 
@@ -424,12 +426,63 @@ def test_bokeh_renderer_integrates_highlight_scatter_after_arnet() -> None:
 
     assert result.rgb.shape == rgb.shape
     assert result.stage_seconds["highlight_extraction"] >= 0.0
+    assert result.stage_seconds["highlight_radiance"] >= 0.0
     assert result.stage_seconds["highlight_scatter"] > 0.0
     assert "highlight-scatter" in {name for name, _ in stages}
     assert result.rgb[94:98, 94:98].max() > 0
     outside = result.rgb[:, :, 0].copy()
     outside[94:98, 94:98] = 0
     assert np.count_nonzero(outside) > 0
+
+
+def test_balanced_bokeh_keeps_eager_radiance_and_matches_low_memory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deferred_calls = 0
+    eager_builder = highlights.extract_highlight_radiance
+
+    def count_deferred(*args: Any, **kwargs: Any) -> Any:
+        nonlocal deferred_calls
+        deferred_calls += 1
+        return eager_builder(*args, **kwargs)
+
+    monkeypatch.setattr(highlights, "extract_highlight_radiance", count_deferred)
+
+    class IdentityModel:
+        def __init__(self, strategy: str) -> None:
+            self.strategy = strategy
+
+        def infer(self, rgb: np.ndarray, defocus: np.ndarray) -> Any:
+            height, width = rgb.shape[:2]
+            return SimpleNamespace(
+                rgb_nchw=rgb.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
+            )
+
+    rgb = np.zeros((192, 192, 3), dtype=np.uint8)
+    rgb[94:98, 94:98] = (255, 220, 160)
+    depth = np.full((192, 192), 0.8, dtype=np.float32)
+
+    low_memory = render_bokeh(
+        rgb,
+        depth,
+        0.1,
+        2.8,
+        IdentityModel("low-memory"),
+        row_chunk_height=17,
+    )
+    balanced = render_bokeh(
+        rgb,
+        depth,
+        0.1,
+        2.8,
+        IdentityModel("balanced"),
+        row_chunk_height=17,
+    )
+
+    assert deferred_calls == 1
+    np.testing.assert_array_equal(low_memory.rgb, balanced.rgb)
+    assert low_memory.stage_seconds["highlight_radiance"] > 0.0
+    assert balanced.stage_seconds["highlight_radiance"] == 0.0
 
 
 def test_explicit_rgb_resize_uses_opencv_cubic_and_keeps_rgb_order() -> None:
