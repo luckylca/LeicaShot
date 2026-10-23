@@ -163,12 +163,14 @@ def test_process_tree_peak_flushes_periodic_stage_and_cgroup_telemetry(
         details={"component": "arnet_tile"},
     )
 
-    with module.ProcessTreePeak(
+    peak = module.ProcessTreePeak(
         interval_seconds=0.001,
         telemetry_stream=stream,
         cgroup_snapshot=lambda: {"current_bytes": 6144, "peak_bytes": 8192},
         telemetry_interval_seconds=0.003,
-    ) as peak:
+    )
+    peak.set_stage("bokeh.arnet_tile")
+    with peak:
         peak._progress_record(progress, "bokeh.arnet_tile")
         time.sleep(0.012)
 

@@ -15,7 +15,10 @@ from laika.bokeh import (
     BokehInferenceError,
     BokehMeARNet,
     BokehTileProgress,
+    _blend_resized_nchw_inplace,
     _mask_coc_inplace,
+    _resize_nchw_to_rgb,
+    _smooth,
     focus_at_point,
     full_frame_coc,
     normalize_depth_map,
@@ -263,8 +266,47 @@ def test_subject_coc_row_chunks_match_full_expression_without_mutating_alpha() -
     np.testing.assert_array_equal(alpha, alpha_before)
 
 
+def test_channelwise_multiscale_blend_is_pixel_identical_to_hwc_baseline() -> None:
+    import cv2
+
+    rng = np.random.default_rng(105)
+    height, width = 50, 70
+    nchw = rng.random((1, 3, 25, 35), dtype=np.float32)
+    plate_coc = rng.uniform(-16.0, 16.0, (height, width)).astype(np.float32)
+    baseline = rng.random((height, width, 3), dtype=np.float32)
+    actual = baseline.copy()
+    previous_scale = 1.0
+    row_chunk_height = 13
+
+    enlarged = _resize_nchw_to_rgb(nchw, width, height, cv2)
+    for row_start in range(0, height, row_chunk_height):
+        row_stop = min(height, row_start + row_chunk_height)
+        weight = _smooth(
+            (np.abs(plate_coc[row_start:row_stop]) - np.float32(5.0 * previous_scale))
+            / np.float32(3.0 * previous_scale)
+        )[:, :, None]
+        current = baseline[row_start:row_stop]
+        current *= 1.0 - weight
+        current += enlarged[row_start:row_stop] * weight
+
+    channel_buffer = np.empty((height, width), dtype=np.float32)
+    _blend_resized_nchw_inplace(
+        actual,
+        nchw,
+        plate_coc,
+        previous_scale,
+        row_chunk_height,
+        cv2,
+        channel_buffer,
+    )
+
+    np.testing.assert_array_equal(actual, baseline)
+
+
 def test_bokeh_multiscale_renderer_uses_model_and_preserves_full_dimensions() -> None:
     class DarkenModel:
+        strategy = "low-memory"
+
         def __init__(self) -> None:
             self.calls: list[tuple[int, int]] = []
             self.direct_calls: list[tuple[int, int]] = []

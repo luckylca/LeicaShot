@@ -757,6 +757,45 @@ def _resize_nchw_to_rgb(nchw: Any, width: int, height: int, cv2: Any) -> Any:
     return output
 
 
+def _blend_resized_nchw_inplace(
+    composite: Any,
+    nchw: Any,
+    plate_coc: Any,
+    previous_scale: float,
+    row_chunk_height: int,
+    cv2: Any,
+    channel_buffer: Any,
+) -> None:
+    """Upscale and blend one NCHW channel at a time into a full-size frame.
+
+    This keeps OpenCV's exact full-frame linear resize while replacing the
+    additional full-size HWC float buffer with one reusable H×W channel.
+    """
+    import numpy as np
+
+    height, width = composite.shape[:2]
+    for channel in range(3):
+        cv2.resize(
+            nchw[0, channel],
+            (width, height),
+            dst=channel_buffer,
+            interpolation=cv2.INTER_LINEAR,
+        )
+        for row_start in range(0, height, row_chunk_height):
+            row_stop = min(height, row_start + row_chunk_height)
+            weight = _smooth(
+                (
+                    np.abs(plate_coc[row_start:row_stop])
+                    - np.float32(5.0 * previous_scale)
+                )
+                / np.float32(3.0 * previous_scale)
+            )[:, :, None]
+            weight_2d = weight[:, :, 0]
+            current = composite[row_start:row_stop, :, channel]
+            current *= 1.0 - weight_2d
+            current += channel_buffer[row_start:row_stop] * weight_2d
+
+
 def resize_rgb_cubic(rgb: Any, width: int, height: int) -> Any:
     """Resize HWC RGB uint8 with OpenCV's reference-compatible cubic kernel."""
     import cv2
@@ -935,6 +974,11 @@ def render_bokeh(
             and callable(will_tile)
             and will_tile(width, height)
         )
+        stream_blend = (
+            getattr(model, "strategy", None) == "low-memory"
+            and composite is not None
+            and not direct_tiled_output
+        )
         supports_tiling = callable(will_tile) and will_tile(pass_width, pass_height)
         model_tile_callback = None
         if supports_tiling and (
@@ -968,12 +1012,26 @@ def render_bokeh(
                     defocus,
                     tile_callback=model_tile_callback,
                 )
-            enlarged = _resize_nchw_to_rgb(prediction.rgb_nchw, width, height, cv2)
+            if stream_blend:
+                channel_buffer = np.empty((height, width), dtype=np.float32)
+                _blend_resized_nchw_inplace(
+                    composite,
+                    prediction.rgb_nchw,
+                    plate_coc,
+                    previous_scale,
+                    row_chunk_height,
+                    cv2,
+                    channel_buffer,
+                )
+                del channel_buffer
+                enlarged = None
+            else:
+                enlarged = _resize_nchw_to_rgb(prediction.rgb_nchw, width, height, cv2)
         del prediction, small_rgb, small_coc, defocus
 
         if composite is None:
             composite = enlarged
-        else:
+        elif not stream_blend:
             for row_start in range(0, height, row_chunk_height):
                 row_stop = min(height, row_start + row_chunk_height)
                 weight = _smooth(
