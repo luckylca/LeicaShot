@@ -938,6 +938,11 @@ def render_bokeh(
             alpha,
             cancel_check=cancel_check,
         )
+        # Pull-push interpolation can accumulate a few float32 ULPs beyond
+        # the normalized sRGB interval. ARNet's input contract is strict, so
+        # project the filled plate back into the representable RGB range in
+        # place before any resized inference pass.
+        np.clip(image_float, np.float32(0.0), np.float32(1.0), out=image_float)
         stage_seconds["subject_background_plate"] = time.perf_counter() - fill_started
     plate_max_abs_coc = _max_abs_rows(plate_coc)
     target_scale = max(1.0, float(np.float32(plate_max_abs_coc / 8.0)))
