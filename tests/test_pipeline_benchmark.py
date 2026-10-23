@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 from laika.cgroup import memory_stats as _cgroup_memory
 
 
@@ -36,3 +41,32 @@ def test_cgroup_v1_unlimited_value_is_reported_as_no_limit(tmp_path) -> None:
 
 def test_cgroup_metrics_are_optional_on_unsupported_hosts(tmp_path) -> None:
     assert _cgroup_memory(tmp_path) is None
+
+
+def test_benchmark_script_prefers_checkout_over_stale_pythonpath(tmp_path) -> None:
+    stale_package = tmp_path / "stale-site" / "laika"
+    stale_package.mkdir(parents=True)
+    (stale_package / "__init__.py").write_text(
+        "raise RuntimeError('stale image package was imported')\n",
+        encoding="utf-8",
+    )
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "benchmark_processing_pipeline.py"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(stale_package.parent)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
