@@ -404,6 +404,8 @@ def _scatter_field_optical(
     levels: list[int],
     cancel_check: Callable[[], None] | None,
     progress_callback: Callable[[float], None] | None,
+    *,
+    skip_empty_mass: bool = True,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -445,12 +447,15 @@ def _scatter_field_optical(
                 source_y = _reflected_rows(y0, y1, half, height)
                 source_x = _reflected_rows(x0, x1, half, width)
                 selection = np.ix_(source_y, source_x)
-                source_high = high[selection]
                 source_coc = depth[selection] * np.float32(radius_scale)
                 layer_weight = np.maximum(
                     np.float32(0.0),
                     np.float32(1.0) - np.abs(source_coc - np.float32(level)),
                 )
+                if skip_empty_mass and not bool(np.any(layer_weight)):
+                    del selection, source_coc, layer_weight
+                    continue
+                source_high = high[selection]
                 weighted = None
                 if np.any(source_high):
                     weighted = np.empty(source_high.shape, dtype=np.float64)
