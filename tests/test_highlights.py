@@ -160,6 +160,50 @@ def test_field_optics_preserves_constant_radiance_through_signed_depth_layers() 
     np.testing.assert_allclose(output, high, rtol=0, atol=4e-6)
 
 
+def test_fp32_radiance_workspace_preserves_final_composite_pixels() -> None:
+    rng = np.random.default_rng(20261024)
+    height, width = 81, 97
+    high = np.zeros((height, width, 3), dtype=np.float32)
+    for _ in range(90):
+        y, x = rng.integers(0, height), rng.integers(0, width)
+        high[max(0, y - 2) : y + 3, max(0, x - 2) : x + 3] += rng.random(
+            3, dtype=np.float32
+        )
+    original = high.copy()
+    coc = rng.uniform(-2.5, 2.5, (height, width)).astype(np.float32)
+
+    fp64_reference = scatter_highlights(
+        high,
+        coc,
+        2.8,
+        radius_scale=3.0,
+        field_optics=True,
+        row_chunk_height=19,
+        _float32_radiance_workspace=False,
+    )
+    fp32_workspace = scatter_highlights(
+        high,
+        coc,
+        2.8,
+        radius_scale=3.0,
+        field_optics=True,
+        row_chunk_height=19,
+    )
+
+    np.testing.assert_array_equal(high, original)
+    assert np.isfinite(fp32_workspace).all()
+    assert float(np.max(np.abs(fp32_workspace - fp64_reference))) <= 2e-6
+    base_rgb = rng.integers(0, 256, (height, width, 3), dtype=np.uint8)
+    rendered_rgb = rng.integers(0, 256, (height, width, 3), dtype=np.uint8)
+    reference_rgb = composite_highlights(
+        base_rgb, rendered_rgb, fp64_reference, row_chunk_height=19
+    )
+    candidate_rgb = composite_highlights(
+        base_rgb, rendered_rgb, fp32_workspace, row_chunk_height=19
+    )
+    np.testing.assert_array_equal(candidate_rgb, reference_rgb)
+
+
 def test_field_optics_skips_zero_mass_filters_without_changing_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -218,12 +262,28 @@ def test_field_optical_scatter_chunk_sizes_preserve_composited_pixels() -> None:
     coc = rng.uniform(-1.5, 1.5, size=(57, 61)).astype(np.float32)
     levels = highlights._source_levels(coc, 3.0, None)
     expected = highlights._scatter_field_optical(
-        high, coc, 2.8, 3.0, 19, levels, None, None
+        high,
+        coc,
+        2.8,
+        3.0,
+        19,
+        levels,
+        None,
+        None,
+        float32_radiance_workspace=False,
     )
 
     for chunk_height in (128, 256, 512):
         actual = highlights._scatter_field_optical(
-            high, coc, 2.8, 3.0, chunk_height, levels, None, None
+            high,
+            coc,
+            2.8,
+            3.0,
+            chunk_height,
+            levels,
+            None,
+            None,
+            float32_radiance_workspace=False,
         )
         np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-12)
         base = np.full((57, 61, 3), 128, dtype=np.uint8)

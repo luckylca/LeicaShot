@@ -59,6 +59,12 @@ The CLI equivalent is `laika pipeline input.jpg output.png --mode color+bokeh ..
 - The renderer releases its source HWC float32 radiance immediately after field-optical scatter returns, before softening and final compositing. It drops the `HighlightSplit` holder early as well, so Balanced mode does not retain a second reference. Weak-reference tests cover both strategies; their image calculations remain the same.
 - A complete source-verified 5760×3840 five-model plus subject task completed under a no-swap 2 GiB cgroup with exact output SHA `0a6282df408319950f0bd4c8f56bcfce78ed9e7eba95ce9c50b2c70f5555ade2`. The softening-stage process-tree peak fell by 263,143,424 B and exact cgroup peak by 112,025,600 B compared with PR #60. The new process-tree high-water is in scatter. Full settings and limitations are in the [radiance lifetime report](benchmarks/highlight-radiance-release-2g-2026-10-24.md).
 
+## Float32 workspace in field-optical scatter on `perf/highlight-scatter-live-buffers`
+
+- `_scatter_field_optical` reuses its float32 advanced-index tile copy as the weighted radiance workspace and filters each node's RGB tile at float32; accumulated scene radiance remains float64. This removes the separate float64 weighted and filtered-radiance tile buffers.
+- A source-verified 5760×3840 five-model/subject task at no-swap 2 GiB completed with the same PNG SHA as PR #61. Scatter-stage process-tree peak fell 107,532,288 B, whole-task process-tree peak fell 42,545,152 B, exact cgroup `memory.peak` fell 29,478,912 B, and largest 1-second cgroup current fell 85,499,904 B. All cgroup max/OOM counters remained zero.
+- On a deterministic scatter fixture, maximum absolute intermediate difference from the FP64 route was `1.1920928955078125e-7`; the final uint8 composite was byte-identical. Native-size full-pipeline times were effectively unchanged and are not a speed claim. This is one real scene; 2 GiB remains experimental. See the [measurement report](benchmarks/highlight-scatter-fp32-workspace-2g-2026-10-24.md).
+
 ## Exact-zero highlight scatter optimization on `perf/highlight-scatter-cpu`
 
 - Merged to `develop` in PR #32 as `a503d0b`; all seven cross-platform Python and Web CI checks passed.

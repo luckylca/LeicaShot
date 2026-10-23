@@ -492,6 +492,7 @@ def _scatter_field_optical(
     skip_empty_mass: bool = True,
     mass_filter_float32: bool = False,
     mass_filter_fft32_outer: bool = False,
+    float32_radiance_workspace: bool = True,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -557,8 +558,23 @@ def _scatter_field_optical(
                 source_high = high[selection]
                 weighted = None
                 if np.any(source_high):
-                    weighted = np.empty(source_high.shape, dtype=np.float64)
-                    np.multiply(source_high, layer_weight[:, :, None], out=weighted)
+                    if float32_radiance_workspace:
+                        # Advanced indexing owns this tile. Reuse it for the
+                        # weighted source and keep the filtered tile in FP32,
+                        # avoiding simultaneous full-size FP64 RGB temporaries.
+                        weighted = source_high
+                        np.multiply(
+                            weighted,
+                            layer_weight[:, :, None],
+                            out=weighted,
+                        )
+                    else:
+                        weighted = np.empty(source_high.shape, dtype=np.float64)
+                        np.multiply(
+                            source_high,
+                            layer_weight[:, :, None],
+                            out=weighted,
+                        )
                 use_fft32 = mass_filter_fft32_outer and layer_weight.shape[1] <= 1700
                 if use_fft32:
                     node_mass = _fft32_mass_filter_interior(
@@ -595,7 +611,9 @@ def _scatter_field_optical(
                 if weighted is not None and np.any(weighted):
                     radiance = cv2.filter2D(
                         weighted,
-                        ddepth=cv2.CV_64F,
+                        ddepth=(
+                            cv2.CV_32F if float32_radiance_workspace else cv2.CV_64F
+                        ),
                         kernel=kernel,
                         borderType=cv2.BORDER_REFLECT_101,
                     )
@@ -669,6 +687,7 @@ def scatter_highlights(
     row_chunk_height: int = 64,
     cancel_check: Callable[[], None] | None = None,
     progress_callback: Callable[[float], None] | None = None,
+    _float32_radiance_workspace: bool = True,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
 
@@ -724,6 +743,7 @@ def scatter_highlights(
             levels,
             cancel_check,
             progress_callback,
+            float32_radiance_workspace=_float32_radiance_workspace,
         )
 
     output = np.zeros_like(high)
