@@ -28,9 +28,7 @@ def test_speed_matrix_rejects_invalid_thread_counts() -> None:
 
 def test_speed_matrix_decodes_only_successful_pipeline_json() -> None:
     payload = {"total_seconds": 1.5, "stage_seconds": {"depth": 0.75}}
-    result = _decode_result(
-        '{"progress":"start"}\n' + json.dumps(payload) + "\n"
-    )
+    result = _decode_result('{"progress":"start"}\n' + json.dumps(payload) + "\n")
     assert result == payload
     with pytest.raises(RuntimeError, match="ProcessingResult"):
         _decode_result('{"error":"not a pipeline result"}')
