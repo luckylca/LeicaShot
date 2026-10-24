@@ -741,3 +741,98 @@ def test_highlight_output_spans_contain_all_possible_light() -> None:
             union[x0:x1] = 1
         for row in footprint[y0 : y0 + chunks]:
             assert np.all(union[row > 0] == 1)
+
+
+@pytest.mark.parametrize("pattern", ["zero", "points", "border", "dense"])
+def test_coc_interval_pruning_exact_on_depth_strata(pattern: str) -> None:
+    rng = np.random.default_rng(20261025)
+    h, w = 37, 61
+    high = np.zeros((h, w, 3), dtype=np.float32)
+    if pattern == "points":
+        high[15, 8] = (0.9, 0.2, 0.4)
+        high[23, 47] = (0.3, 0.7, 0.2)
+    elif pattern == "border":
+        high[0, 0] = (0.1, 0.4, 0.6)
+        high[-1, -1] = (0.9, 0.8, 0.1)
+    elif pattern == "dense":
+        high = rng.random((h, w, 3), dtype=np.float32) * 0.2
+    coc = np.full((h, w), -5.0, dtype=np.float32)
+    coc[:, w // 2 :] = 6.0
+    coc[10:15] = rng.uniform(-3.0, 3.0, (5, w)).astype(np.float32)
+    kwargs = {
+        "radius_scale": 3.0,
+        "field_optics": True,
+        "row_chunk_height": 7,
+    }
+    control = scatter_highlights(high, coc, 2.8, _coc_interval_pruning=False, **kwargs)
+    optimized = scatter_highlights(high, coc, 2.8, _coc_interval_pruning=True, **kwargs)
+    default = scatter_highlights(high, coc, 2.8, **kwargs)
+    np.testing.assert_array_equal(default, optimized)
+    np.testing.assert_array_equal(optimized, control)
+
+
+@pytest.mark.parametrize("chunk", [1, 7, 19, 64])
+def test_coc_interval_pruning_reflection_and_float_boundaries(
+    chunk: int,
+) -> None:
+    rng = np.random.default_rng(20261025 + chunk)
+    h, w = 29, 43
+    high = np.zeros((h, w, 3), dtype=np.float32)
+    high[0, 0] = (0.8, 0.2, 0.4)
+    high[-1, -1] = (0.7, 0.3, 0.9)
+    high[12, 21] = (0.6, 0.8, 0.4)
+    coc = rng.uniform(-6, 6, size=(h, w)).astype(np.float32)
+    # Deliberately exercise values on layer support boundaries.
+    coc[0, :] = np.float32(1 / 3)
+    coc[-1, :] = np.float32(-2 / 3)
+    coc[12, :] = np.float32(17 / 3)
+    coc = np.ascontiguousarray(coc)
+    kwargs = {
+        "radius_scale": 3.0,
+        "field_optics": True,
+        "row_chunk_height": chunk,
+    }
+    original = scatter_highlights(high, coc, 2.8, _coc_interval_pruning=False, **kwargs)
+    optimized = scatter_highlights(high, coc, 2.8, _coc_interval_pruning=True, **kwargs)
+    np.testing.assert_array_equal(optimized, original)
+
+
+def test_coc_interval_pruning_does_not_change_full_support_legacy_mode() -> None:
+    high = np.zeros((15, 19, 3), dtype=np.float32)
+    high[2:4, 5:7] = (0.8, 0.3, 0.6)
+    coc = np.full((15, 19), -0.5, dtype=np.float32)
+    kwargs = {"field_optics": True, "_output_support_roi": False}
+    a = scatter_highlights(high, coc, 2.8, **kwargs)
+    b = scatter_highlights(high, coc, 2.8, _coc_interval_pruning=True, **kwargs)
+    np.testing.assert_array_equal(b, a)
+
+
+def test_coc_pruning_prescan_remains_cancellable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    high = np.zeros((22, 25, 3), dtype=np.float32)
+    high[7, 8] = (0.3, 0.6, 0.9)
+    coc = np.zeros((22, 25), dtype=np.float32)
+    post_support = False
+    original = highlights._highlight_output_spans
+
+    def prepared(*args, **kwargs):
+        nonlocal post_support
+        result = original(*args, **kwargs)
+        post_support = True
+        return result
+
+    def cancelled() -> None:
+        if post_support:
+            raise RuntimeError("cancelled during CoC prescan")
+
+    monkeypatch.setattr(highlights, "_highlight_output_spans", prepared)
+    with pytest.raises(RuntimeError, match="during CoC prescan"):
+        scatter_highlights(
+            high,
+            coc,
+            2.8,
+            field_optics=True,
+            cancel_check=cancelled,
+            _coc_interval_pruning=True,
+        )
