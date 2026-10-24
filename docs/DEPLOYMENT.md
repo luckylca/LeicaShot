@@ -94,3 +94,21 @@ completed M9 + Depth + ARNet + highlights through one HTTP request; timing,
 cgroup peak, hashes and direct SDK parity are in the [Docker API benchmark](benchmarks/docker-api-real-photo-2026-10-22.md).
 That preview-size smoke does not certify native-resolution resource targets.
 See [project status](PROJECT_STATUS.md) for current low-memory results.
+
+### Optional ARNet CPU arena speed mode
+
+Low-memory CPU inference keeps the historical conservative ORT allocator
+by default. To exchange more resident memory for faster repeated ARNet
+tile inference, set LAIKA_ARNET_CPU_ARENA=1 in the Python worker environment.
+Use LAIKA_ARNET_CPU_ARENA=0 to disable and restore the original allocation
+strategy. Optional LAIKA_ARNET_ARENA_SHRINK_TILES=32 releases cached
+regions after every 32 tiles; it has shown only limited peak-memory benefit.
+Runtime metadata exposes the resolved settings.
+
+On a genuine 20MP Windows i9-12900H photo, ARNet CPU arena reduced
+first-pass inference ~33s to ~21s without changing final PNG bytes.
+But full-process sampled RSS increased approximately 300 MiB; hence
+this is an opt-in mode, NOT the production low-memory default.
+Do not enable for a hard 2GiB container solely on Windows RSS evidence.
+For the full benchmark, see
+docs/benchmarks/arnet-cpu-arena-speed-memory-tradeoff-2026-10-25.md.
