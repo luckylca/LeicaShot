@@ -12,6 +12,8 @@ _benchmark_api = runpy.run_path(
 _validate_task_count = _benchmark_api["_validate_task_count"]
 _stream_artifact = _benchmark_api["_stream_artifact"]
 _get_task_status = _benchmark_api["_get_task_status"]
+_ServerProcessPeak = _benchmark_api["ServerProcessPeak"]
+_process_tree_cpu_seconds = _benchmark_api["_process_tree_cpu_seconds"]
 
 
 class _PNGResponse:
@@ -112,3 +114,89 @@ def test_api_status_poll_bounds_persistent_transport_errors(monkeypatch) -> None
             deadline=_benchmark_api["time"].monotonic() + 5,
             max_consecutive_errors=2,
         )
+
+
+def test_process_peak_scans_uss_less_often_than_rss(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    class _StopAfterSamples:
+        def __init__(self) -> None:
+            self.checks = 0
+
+        def is_set(self) -> bool:
+            self.checks += 1
+            return self.checks > 4
+
+        def wait(self, _seconds: float) -> None:
+            return None
+
+    class _Process:
+        def __init__(self) -> None:
+            self.rss_calls = 0
+            self.uss_calls = 0
+
+        def children(self, *, recursive: bool) -> list[object]:
+            assert recursive
+            return []
+
+        def memory_info(self):
+            self.rss_calls += 1
+            return SimpleNamespace(rss=100)
+
+        def memory_full_info(self):
+            self.uss_calls += 1
+            return SimpleNamespace(uss=80)
+
+        def cpu_times(self):
+            return SimpleNamespace(user=1.0, system=2.0)
+
+    class _FakePsutil:
+        class NoSuchProcess(Exception):
+            pass
+
+        class AccessDenied(Exception):
+            pass
+
+        def __init__(self, process: _Process) -> None:
+            self.process = process
+
+        def Process(self, _pid: int) -> _Process:
+            return self.process
+
+    process = _Process()
+    peak = _ServerProcessPeak(1, rss_interval_seconds=0.1, uss_interval_seconds=1.0)
+    peak._psutil = _FakePsutil(process)
+    peak._stop = _StopAfterSamples()
+    ticks = iter((0.0, 0.25, 1.1, 2.1))
+    monkeypatch.setattr(_benchmark_api["time"], "monotonic", lambda: next(ticks))
+
+    peak._sample()
+
+    assert process.rss_calls == 4
+    assert process.uss_calls == 3
+    assert peak.rss_sample_count == 4
+    assert peak.uss_sample_count == 3
+    assert peak.peak_rss_bytes == 100
+    assert peak.peak_uss_bytes == 80
+
+
+def test_process_tree_cpu_sums_root_and_child_processes(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    class _Process:
+        def __init__(self, user: float, system: float) -> None:
+            self.user = user
+            self.system = system
+
+        def cpu_times(self):
+            return SimpleNamespace(user=self.user, system=self.system)
+
+    root = _Process(1.25, 0.25)
+    child = _Process(2.0, 0.5)
+    monkeypatch.setitem(
+        _process_tree_cpu_seconds.__globals__,
+        "_server_process_tree",
+        lambda pid: [root, child],
+    )
+
+    assert _process_tree_cpu_seconds(123) == 4.0

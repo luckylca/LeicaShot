@@ -25,35 +25,47 @@ if str(ROOT) not in sys.path:
 
 
 class ServerProcessPeak:
-    """Sample RSS and CPU for the API server and all child processes."""
+    """Sample API process-tree RSS and periodic USS scans."""
 
-    def __init__(self, pid: int, interval_seconds: float = 0.01) -> None:
+    def __init__(
+        self,
+        pid: int,
+        rss_interval_seconds: float = 0.1,
+        uss_interval_seconds: float = 1.0,
+    ) -> None:
         import psutil
 
+        if rss_interval_seconds <= 0 or uss_interval_seconds <= 0:
+            raise ValueError("process sampling intervals must be positive")
         self.pid = pid
-        self.interval_seconds = interval_seconds
+        self.rss_interval_seconds = rss_interval_seconds
+        self.uss_interval_seconds = uss_interval_seconds
         self.peak_rss_bytes = 0
         self.peak_uss_bytes: int | None = None
-        self.cpu_seconds_before = 0.0
-        self.cpu_seconds_after = 0.0
+        self.rss_sample_count = 0
+        self.uss_sample_count = 0
         self._psutil = psutil
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._sample, daemon=True)
 
     def _sample(self) -> None:
+        next_uss_sample = 0.0
         while not self._stop.is_set():
             try:
                 root = self._psutil.Process(self.pid)
                 processes = [root, *root.children(recursive=True)]
             except (self._psutil.NoSuchProcess, self._psutil.AccessDenied):
                 break
+            now = time.monotonic()
+            sample_uss = now >= next_uss_sample
             rss = 0
             uss = 0
             uss_available = True
             for process in processes:
                 try:
                     rss += process.memory_info().rss
-                    uss += process.memory_full_info().uss
+                    if sample_uss:
+                        uss += process.memory_full_info().uss
                 except (
                     self._psutil.NoSuchProcess,
                     self._psutil.AccessDenied,
@@ -62,24 +74,16 @@ class ServerProcessPeak:
                 ):
                     uss_available = False
             self.peak_rss_bytes = max(self.peak_rss_bytes, rss)
-            if uss_available:
-                self.peak_uss_bytes = max(self.peak_uss_bytes or 0, uss)
-            try:
-                times = root.cpu_times()
-                self.cpu_seconds_after = times.user + times.system
-            except (self._psutil.NoSuchProcess, self._psutil.AccessDenied):
-                pass
-            self._stop.wait(self.interval_seconds)
+            self.rss_sample_count += 1
+            if sample_uss:
+                self.uss_sample_count += 1
+                next_uss_sample = now + self.uss_interval_seconds
+                if uss_available:
+                    self.peak_uss_bytes = max(self.peak_uss_bytes or 0, uss)
+            self._stop.wait(self.rss_interval_seconds)
 
     def __enter__(self) -> ServerProcessPeak:
         self._thread.start()
-        time.sleep(0.02)
-        try:
-            process = self._psutil.Process(self.pid)
-            times = process.cpu_times()
-            self.cpu_seconds_before = times.user + times.system
-        except (self._psutil.NoSuchProcess, self._psutil.AccessDenied):
-            pass
         return self
 
     def __exit__(self, *_exc: Any) -> None:
@@ -99,6 +103,40 @@ def _reserve_port() -> int:
     with socket.socket() as server_socket:
         server_socket.bind(("127.0.0.1", 0))
         return int(server_socket.getsockname()[1])
+
+
+def _cgroup_v2_cpu_snapshot() -> dict[str, int] | None:
+    """Read cgroup CPU counters when this benchmark runs in a v2 cgroup."""
+    stats_path = Path("/sys/fs/cgroup/cpu.stat")
+    if not stats_path.is_file():
+        return None
+    snapshot: dict[str, int] = {}
+    try:
+        for line in stats_path.read_text(encoding="ascii").splitlines():
+            key, value = line.split(maxsplit=1)
+            snapshot[key] = int(value)
+    except (OSError, ValueError):
+        return None
+    return snapshot or None
+
+
+def _cpu_seconds(cpu_times: Any) -> float:
+    return float(cpu_times.user) + float(cpu_times.system)
+
+
+def _process_tree_cpu_seconds(pid: int) -> float | None:
+    import psutil
+
+    processes = _server_process_tree(pid)
+    if not processes:
+        return None
+    total = 0.0
+    for process in processes:
+        try:
+            total += _cpu_seconds(process.cpu_times())
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+    return total
 
 
 def _server_process_tree(pid: int) -> list[Any]:
@@ -347,7 +385,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         stderr=subprocess.STDOUT,
         text=True,
     )
-    peak = ServerProcessPeak(server.pid)
+    peak = ServerProcessPeak(
+        server.pid,
+        rss_interval_seconds=args.rss_sample_interval_seconds,
+        uss_interval_seconds=args.uss_sample_interval_seconds,
+    )
     available_before = psutil.virtual_memory().available
     cgroup_before = _cgroup_v2_snapshot()
     started = time.perf_counter()
@@ -368,6 +410,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 logs = server.communicate(timeout=1)[0]
                 raise RuntimeError(f"Laika API exited during startup:\n{logs}")
 
+            benchmark_process = psutil.Process()
+            benchmark_cpu_before = benchmark_process.cpu_times()
+            server_cpu_before = _process_tree_cpu_seconds(server.pid)
+            cgroup_cpu_before = _cgroup_v2_cpu_snapshot()
             started = time.perf_counter()
             with ThreadPoolExecutor(max_workers=args.task_count) as executor:
                 task_runs = list(
@@ -393,6 +439,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     )
                 )
             task_wall_seconds = time.perf_counter() - started
+            benchmark_cpu_after = benchmark_process.cpu_times()
+            server_cpu_after = _process_tree_cpu_seconds(server.pid)
+            cgroup_cpu_after = _cgroup_v2_cpu_snapshot()
 
             host_info = {
                 "platform": platform.platform(),
@@ -423,12 +472,37 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "tasks": task_runs,
                 "server_process_tree_peak_rss_bytes": peak.peak_rss_bytes,
                 "server_process_tree_peak_uss_bytes": peak.peak_uss_bytes,
-                "server_cpu_seconds": max(
-                    0.0, peak.cpu_seconds_after - peak.cpu_seconds_before
+                "server_cpu_seconds": (
+                    max(0.0, server_cpu_after - server_cpu_before)
+                    if server_cpu_before is not None and server_cpu_after is not None
+                    else None
                 ),
+                "benchmark_client_process_cpu_seconds": max(
+                    0.0,
+                    _cpu_seconds(benchmark_cpu_after)
+                    - _cpu_seconds(benchmark_cpu_before),
+                ),
+                "server_process_tree_sampling": {
+                    "rss_interval_seconds": peak.rss_interval_seconds,
+                    "uss_interval_seconds": peak.uss_interval_seconds,
+                    "rss_sample_count": peak.rss_sample_count,
+                    "uss_sample_count": peak.uss_sample_count,
+                },
                 "server_process_count": len(_server_process_tree(server.pid)),
                 "cgroup_v2_before": cgroup_before,
                 "cgroup_v2_after": _cgroup_v2_snapshot(),
+                "cgroup_cpu_before": cgroup_cpu_before,
+                "cgroup_cpu_after": cgroup_cpu_after,
+                "cgroup_cpu_seconds": (
+                    max(
+                        0,
+                        cgroup_cpu_after.get("usage_usec", 0)
+                        - cgroup_cpu_before.get("usage_usec", 0),
+                    )
+                    / 1_000_000
+                    if cgroup_cpu_before is not None and cgroup_cpu_after is not None
+                    else None
+                ),
             }
             if args.task_count == 1:
                 report.update(
@@ -477,6 +551,8 @@ def main() -> int:
     )
     parser.add_argument("--timeout-seconds", type=float, default=1800.0)
     parser.add_argument("--poll-interval", type=float, default=0.2)
+    parser.add_argument("--rss-sample-interval-seconds", type=float, default=0.1)
+    parser.add_argument("--uss-sample-interval-seconds", type=float, default=1.0)
     parser.add_argument(
         "--task-count",
         type=int,
@@ -491,8 +567,14 @@ def main() -> int:
     )
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
-    if args.timeout_seconds <= 0 or args.poll_interval <= 0 or args.task_count < 1:
-        parser.error("timeout, poll interval, and task count must be positive")
+    if (
+        args.timeout_seconds <= 0
+        or args.poll_interval <= 0
+        or args.task_count < 1
+        or args.rss_sample_interval_seconds <= 0
+        or args.uss_sample_interval_seconds <= 0
+    ):
+        parser.error("timeouts, sample intervals, and task count must be positive")
     report = run(args)
     serialized = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if args.report:
