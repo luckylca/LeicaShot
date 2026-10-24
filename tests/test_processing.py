@@ -581,6 +581,17 @@ def test_split_arnet_env_reaches_unified_low_memory_engine(
     assert calls[-1]["split_graph_dir"] == "C:/checked-models/arnet-split"
     assert calls[-1]["strategy"] == "low-memory"
 
+    # Larger split-core tiles trade some peak memory for potentially faster
+    # ONNX convolution. The default is not altered.
+    monkeypatch.setenv("LAIKA_ARNET_SPLIT_EDGE", "384")
+    _engine, owned = low_engine._acquire_bokeh(options)
+    assert owned
+    assert calls[-1]["split_graph_edge"] == 384
+    monkeypatch.setenv("LAIKA_ARNET_SPLIT_EDGE", "513")
+    with pytest.raises(ValueError, match="even and in"):
+        low_engine._acquire_bokeh(options)
+    monkeypatch.delenv("LAIKA_ARNET_SPLIT_EDGE")
+
     monkeypatch.delenv("LAIKA_ARNET_SPLIT_DIR")
     _engine, owned = low_engine._acquire_bokeh(options)
     assert owned
