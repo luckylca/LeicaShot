@@ -690,8 +690,25 @@ def _scatter_field_optical(
                     relevant.append((node_index, x0, x1, minimum, maximum))
             active_node_intervals.append(relevant)
 
+    # If a layer cannot affect ANY sparse output support span, skip pupil
+    # generation and all band loops for that layer. Preserve cancellation
+    # and exactly one progress event per original integer CoC layer.
+    active_levels = None
+    if active_node_intervals is not None:
+        active_levels = {
+            level
+            for band in active_node_intervals
+            for _, _, _, minimum, maximum in band
+            for level in levels
+            if minimum < level + 1 and maximum > level - 1
+        }
+
     for level_index, level in enumerate(levels):
         _check(cancel_check)
+        if active_levels is not None and level not in active_levels:
+            if progress_callback is not None:
+                progress_callback((level_index + 1) / len(levels))
+            continue
         radius = abs(level)
         if radius == 0:
             zero_kernel = aperture_kernel(0, aperture).astype(np.float64)

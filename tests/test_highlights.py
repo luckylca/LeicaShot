@@ -836,3 +836,32 @@ def test_coc_pruning_prescan_remains_cancellable(
             cancel_check=cancelled,
             _coc_interval_pruning=True,
         )
+
+
+def test_skip_unreachable_coc_layer_preserves_pixels_and_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    high = np.zeros((96, 232, 3), dtype=np.float32)
+    high[24, 25] = (0.8, 0.5, 0.3)
+    coc = np.zeros((96, 232), dtype=np.float32)
+    coc[:, 150:] = -4.0
+    original = highlights._field_pupil_kernels
+    calls = []
+
+    def counted(shapes, radius, aperture):
+        calls.append(radius)
+        return original(shapes, radius, aperture)
+
+    monkeypatch.setattr(highlights, "_field_pupil_kernels", counted)
+    before = scatter_highlights(
+        high, coc, 2.8, field_optics=True, _coc_interval_pruning=False
+    )
+    assert 12 in calls
+    calls.clear()
+    progress = []
+    after = scatter_highlights(
+        high, coc, 2.8, field_optics=True, progress_callback=progress.append
+    )
+    assert not calls
+    np.testing.assert_array_equal(before, after)
+    assert progress == [0.5, 1.0]
