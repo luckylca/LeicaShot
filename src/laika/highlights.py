@@ -620,6 +620,7 @@ def _scatter_field_optical(
     sparse_mass_roi: bool = False,
     sparse_radiance_roi: bool = False,
     output_support_roi: bool = False,
+    coc_interval_pruning: bool = False,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -651,6 +652,43 @@ def _scatter_field_optical(
         else None
     )
 
+    # A depth pixel can contribute to integer layer L only when
+    # L-1 < coc*radius_scale < L+1. Compute conservative min/max bounds
+    # once for each output support + optical field node combination.
+    # Expanding by the MAXIMUM kernel halo ensures every source used by
+    # any smaller layer is inside the probed region, even at reflections.
+    # This removes impossible layers without modifying valid convolution.
+    active_node_intervals = None
+    if coc_interval_pruning and output_spans is not None:
+        maximal_halo = max(abs(level) + 1 for level in levels)
+        active_node_intervals = []
+        for band_index, out_y0 in enumerate(range(0, height, row_chunk_height)):
+            out_y1 = min(height, out_y0 + row_chunk_height)
+            relevant = []
+            for node_index, node in enumerate(nodes):
+                _, _, _, wy, _, _, node_y0, node_y1, _ = node
+                y0 = max(out_y0, node_y0)
+                y1 = min(out_y1, node_y1)
+                if y0 >= y1 or not bool(np.any(wy[y0:y1] > 0.0)):
+                    continue
+                for span_x0, span_x1 in output_spans[band_index]:
+                    x0 = max(node[4], span_x0)
+                    x1 = min(node[5], span_x1)
+                    if x0 >= x1:
+                        continue
+                    src_y0 = max(0, y0 - maximal_halo)
+                    src_y1 = min(height, y1 + maximal_halo)
+                    src_x0 = max(0, x0 - maximal_halo)
+                    src_x1 = min(width, x1 + maximal_halo)
+                    source_depth = depth[src_y0:src_y1, src_x0:src_x1]
+                    scale = float(np.float32(radius_scale))
+                    # Outward FP32 rounding allowance, conservative even
+                    # when a source depth lies on a CoC-layer boundary.
+                    minimum = float(source_depth.min()) * scale - 1e-4
+                    maximum = float(source_depth.max()) * scale + 1e-4
+                    relevant.append((node_index, x0, x1, minimum, maximum))
+            active_node_intervals.append(relevant)
+
     for level_index, level in enumerate(levels):
         _check(cancel_check)
         radius = abs(level)
@@ -674,7 +712,16 @@ def _scatter_field_optical(
             _check(cancel_check)
             out_y1 = min(height, out_y0 + row_chunk_height)
             row_count = out_y1 - out_y0
-            if output_spans is not None:
+            if active_node_intervals is not None:
+                relevant = active_node_intervals[out_y0 // row_chunk_height]
+                active_nodes = [
+                    (nodes[i], kernels[i], mass_kernels[i], x0, x1)
+                    for i, x0, x1, min_coc, max_coc in relevant
+                    if min_coc < level + 1 and max_coc > level - 1
+                ]
+                if not active_nodes:
+                    continue
+            elif output_spans is not None:
                 spans = output_spans[out_y0 // row_chunk_height]
                 if not spans:
                     continue
@@ -905,6 +952,7 @@ def scatter_highlights(
     _sparse_mass_roi: bool = True,
     _sparse_radiance_roi: bool = True,
     _output_support_roi: bool = True,
+    _coc_interval_pruning: bool = True,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
 
@@ -972,6 +1020,7 @@ def scatter_highlights(
             sparse_mass_roi=_sparse_mass_roi,
             sparse_radiance_roi=_sparse_radiance_roi,
             output_support_roi=_output_support_roi,
+            coc_interval_pruning=_coc_interval_pruning,
         )
 
     output = np.zeros_like(high)
