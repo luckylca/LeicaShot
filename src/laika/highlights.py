@@ -566,6 +566,43 @@ def _sparse_radiance_filter(
     )
 
 
+def _highlight_output_spans(
+    high: Any, max_kernel_half: int, row_chunk_height: int
+) -> list[list[tuple[int, int]]]:
+    """Conservatively bound where any source highlight can affect an output.
+
+    Source radiance elsewhere is identically zero; a compact pupil cannot
+    contribute beyond its kernel half width. Rectangle masks are conservative
+    for diagonals, and cover mirrored global-image boundary contributions.
+    """
+    height, width = high.shape[:2]
+    # Scan only a halo-extended band. This avoids a full-frame HWC
+    # comparison temporary and a full-frame HW boolean activity mask.
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2 * max_kernel_half + 1, 1))
+    result: list[list[tuple[int, int]]] = []
+    for y0 in range(0, height, row_chunk_height):
+        y1 = min(y0 + row_chunk_height, height)
+        source_lo = max(0, y0 - max_kernel_half)
+        source_hi = min(height, y1 + max_kernel_half)
+        nonzero_cols = np.any(high[source_lo:source_hi], axis=(0, 2))
+        if not np.any(nonzero_cols):
+            result.append([])
+            continue
+        active = cv2.dilate(
+            nonzero_cols.astype(np.uint8)[None, :],
+            kernel,
+            borderType=cv2.BORDER_CONSTANT,
+        )[0].astype(bool)
+        edges = np.flatnonzero(np.diff(np.pad(active.astype(np.int8), (1, 1))))
+        result.append(
+            [
+                (int(start), int(end))
+                for start, end in zip(edges[::2], edges[1::2], strict=True)
+            ]
+        )
+    return result
+
+
 def _scatter_field_optical(
     high: Any,
     depth: Any,
@@ -582,6 +619,7 @@ def _scatter_field_optical(
     float32_radiance_workspace: bool = True,
     sparse_mass_roi: bool = False,
     sparse_radiance_roi: bool = False,
+    output_support_roi: bool = False,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -597,6 +635,21 @@ def _scatter_field_optical(
                 (x, y, wx, wy, x0, x1, y0, y1, _optical_shape(x, y, width, height))
             )
     pupil_shapes = [node[8] for node in nodes]
+    if output_support_roi:
+        # Smaller bands reduce the spatial overestimation of sparse light
+        # support, improving both convolution work and temporary memory.
+        row_chunk_height = min(row_chunk_height, 64)
+
+    # A single conservative support map is valid for *all* CoC layers.
+    # Mass from non-luminous layers is still evaluated inside these regions,
+    # retaining the reference near-to-far occlusion and coverage equations.
+    output_spans = (
+        _highlight_output_spans(
+            high, max(abs(level) + 1 for level in levels), row_chunk_height
+        )
+        if output_support_roi
+        else None
+    )
 
     for level_index, level in enumerate(levels):
         _check(cancel_check)
@@ -621,13 +674,30 @@ def _scatter_field_optical(
             _check(cancel_check)
             out_y1 = min(height, out_y0 + row_chunk_height)
             row_count = out_y1 - out_y0
+            if output_spans is not None:
+                spans = output_spans[out_y0 // row_chunk_height]
+                if not spans:
+                    continue
+                active_nodes = [
+                    (node, kernel, mass_kernel, max(node[4], start), min(node[5], end))
+                    for node, kernel, mass_kernel in zip(
+                        nodes, kernels, mass_kernels, strict=True
+                    )
+                    for start, end in spans
+                    if max(node[4], start) < min(node[5], end)
+                ]
+            else:
+                active_nodes = [
+                    (node, kernel, mass_kernel, node[4], node[5])
+                    for node, kernel, mass_kernel in zip(
+                        nodes, kernels, mass_kernels, strict=True
+                    )
+                ]
             mass_total = np.zeros((row_count, width), dtype=np.float64)
             radiance_total = np.zeros((row_count, width, 3), dtype=np.float64)
 
-            for node, kernel, mass_kernel in zip(
-                nodes, kernels, mass_kernels, strict=True
-            ):
-                _, _, wx, wy, x0, x1, node_y0, node_y1, _ = node
+            for node, kernel, mass_kernel, x0, x1 in active_nodes:
+                _, _, wx, wy, _, _, node_y0, node_y1, _ = node
                 y0 = max(out_y0, node_y0)
                 y1 = min(out_y1, node_y1)
                 if y0 >= y1 or not bool(np.any(wy[y0:y1] > 0.0)):
@@ -834,8 +904,14 @@ def scatter_highlights(
     _float32_radiance_workspace: bool = True,
     _sparse_mass_roi: bool = True,
     _sparse_radiance_roi: bool = True,
+    _output_support_roi: bool = True,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
+
+    Exact nonzero highlight output support selects only contributing spatial
+    regions, skipping all CoC-layer convolution work outside the influence
+    footprint. The output remains native-resolution; the original path is
+    available via the private output_support_roi flag.
 
     Sparse CoC layer support is filtered only where it can affect pixels;
     the full kernel is retained, with a dense-path fallback.
@@ -895,6 +971,7 @@ def scatter_highlights(
             float32_radiance_workspace=_float32_radiance_workspace,
             sparse_mass_roi=_sparse_mass_roi,
             sparse_radiance_roi=_sparse_radiance_roi,
+            output_support_roi=_output_support_roi,
         )
 
     output = np.zeros_like(high)

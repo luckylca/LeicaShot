@@ -672,3 +672,72 @@ def test_sparse_radiance_roi_preserves_quantized_scatter() -> None:
             highlights.composite_highlights(bgr, bgr, compact),
             highlights.composite_highlights(bgr, bgr, baseline),
         )
+
+
+def test_highlight_output_support_guides_without_pixel_changes() -> None:
+    rng = np.random.default_rng(998716)
+    height, width = 129, 241
+    for pattern in ("empty", "small", "edges", "many", "dense"):
+        high = np.zeros((height, width, 3), dtype=np.float32)
+        if pattern == "small":
+            high[44:46, 28:30] = (0.8, 0.1, 0.6)
+            high[80, 209] = (0.0, 0.7, 0.0)
+        elif pattern == "edges":
+            high[0, 0] = (0.5, 0.5, 0.4)
+            high[-1, -1] = (0.1, 0.7, 0.2)
+            high[0, -1] = (0.1, 0.2, 0.8)
+        elif pattern == "many":
+            for y, x in zip(
+                rng.integers(0, height, 30),
+                rng.integers(0, width, 30),
+                strict=True,
+            ):
+                high[y, x] = rng.random(3, dtype=np.float32)
+        elif pattern == "dense":
+            high = rng.random((height, width, 3), dtype=np.float32) * 0.25
+        coc = rng.uniform(-5.0, 3.3, (height, width)).astype(np.float32)
+        for chunk in (25, 128):
+            baseline = scatter_highlights(
+                high,
+                coc,
+                2.8,
+                field_optics=True,
+                row_chunk_height=chunk,
+                _output_support_roi=False,
+            )
+            guided = scatter_highlights(
+                high,
+                coc,
+                2.8,
+                field_optics=True,
+                row_chunk_height=chunk,
+                _output_support_roi=True,
+            )
+            np.testing.assert_allclose(guided, baseline, rtol=0, atol=3e-6)
+            base = rng.integers(0, 256, (height, width, 3), dtype=np.uint8)
+            np.testing.assert_array_equal(
+                highlights.composite_highlights(base, base, guided),
+                highlights.composite_highlights(base, base, baseline),
+            )
+
+
+def test_highlight_output_spans_contain_all_possible_light() -> None:
+    high = np.zeros((93, 171, 3), dtype=np.float32)
+    high[0, 0, :] = 1.0
+    high[46:49, 87:90, :] = 0.5
+    high[-1, -1, :] = 0.8
+    radius = 7
+    chunks = 25
+    spans = highlights._highlight_output_spans(high, radius, chunks)
+    import cv2
+
+    footprint = cv2.dilate(
+        np.any(high != 0, axis=2).astype(np.uint8),
+        cv2.getStructuringElement(cv2.MORPH_RECT, (2 * radius + 1, 2 * radius + 1)),
+    )
+    for y0, intervals in zip(range(0, high.shape[0], chunks), spans, strict=True):
+        union = np.zeros(high.shape[1], dtype=np.uint8)
+        for x0, x1 in intervals:
+            union[x0:x1] = 1
+        for row in footprint[y0 : y0 + chunks]:
+            assert np.all(union[row > 0] == 1)

@@ -1,4 +1,21 @@
-﻿# Windows five-model full-pipeline comparison at 2048 x 1365
+# SUPERSEDED / RETRACTED — invalid earlier A/B comparison
+
+**Correction 2026-10-24 (see windows-output-support-scheduling-2026-10-24.md):**
+The earlier full-pipeline benchmark script had a monkeypatch wiring error.
+render_bokeh locally imports scatter_highlights from laika.highlights, but
+that earlier comparison patched laika.bokeh.scatter_highlights, an unused
+module attribute. The purported before/after arms did not actually select
+different convolution implementations. Consequently the 79.8 MB RSS
+reduction and any complete-request speed difference stated below
+are **NOT valid optimization evidence**. The same output SHA256 only proves
+that the same output was produced, not that the control was changed.
+
+The earlier measurements are retained below as a historical error record,
+not authoritative performance evidence. See the newer corrected report
+for binding-verified full-pipeline A/B results and output parity.
+
+---
+# Windows five-model full-pipeline comparison at 2048 x 1365
 
 Date: 2026-10-24. Source baseline develop 431c1de (merged PR #71 and #72).
 This experiment evaluates whether both exact-support convolution changes
