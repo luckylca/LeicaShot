@@ -741,3 +741,47 @@ def test_highlight_output_spans_contain_all_possible_light() -> None:
             union[x0:x1] = 1
         for row in footprint[y0 : y0 + chunks]:
             assert np.all(union[row > 0] == 1)
+
+
+def test_field_pupil_cross_layer_cache_reuses_signed_radius_without_pixels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    high = np.zeros((33, 41, 3), dtype=np.float32)
+    high[15:18, 18:22] = (0.8, 0.4, 0.2)
+    coc = np.ones((33, 41), dtype=np.float32)
+    coc[:16] = -1.0
+    original = highlights._field_pupil_kernels
+    calls: list[int] = []
+
+    def counted(
+        shapes: list[tuple[float, float, float]],
+        radius: int,
+        aperture: float,
+    ) -> list[np.ndarray]:
+        calls.append(radius)
+        return original(shapes, radius, aperture)
+
+    monkeypatch.setattr(highlights, "_field_pupil_kernels", counted)
+    options = {
+        "radius_scale": 1.0,
+        "field_optics": True,
+        "row_chunk_height": 11,
+    }
+    uncached = scatter_highlights(
+        high, coc, 2.8, _pupil_cache_budget_bytes=0, **options
+    )
+    assert calls.count(1) == 2
+    calls.clear()
+    cached = scatter_highlights(
+        high, coc, 2.8, _pupil_cache_budget_bytes=1024 * 1024, **options
+    )
+    assert calls == [1]
+    np.testing.assert_array_equal(cached, uncached)
+    calls.clear()
+    tiny_budget = scatter_highlights(
+        high, coc, 2.8, _pupil_cache_budget_bytes=1, **options
+    )
+    assert calls.count(1) == 2
+    np.testing.assert_array_equal(tiny_budget, uncached)
+    with pytest.raises(ValueError, match="cache budget"):
+        scatter_highlights(high, coc, 2.8, _pupil_cache_budget_bytes=-1)
