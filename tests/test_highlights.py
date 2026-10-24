@@ -634,3 +634,41 @@ def test_sparse_mass_scatter_matches_dense_and_border_cases() -> None:
             highlights.composite_highlights(bgr, bgr, result),
             highlights.composite_highlights(bgr, bgr, baseline),
         )
+
+
+def test_sparse_radiance_roi_preserves_quantized_scatter() -> None:
+    rng = np.random.default_rng(7206)
+    h, w = 98, 157
+    for pattern in ("sparse", "dense", "border"):
+        high = np.zeros((h, w, 3), dtype=np.float32)
+        if pattern == "dense":
+            high[:] = rng.random((h, w, 3), dtype=np.float32) * 0.04
+        elif pattern == "border":
+            high[0:2, 0:3] = 0.8
+            high[-2:, -4:] = 0.2
+        else:
+            high[23:25, 56:59] = rng.random((2, 3, 3), dtype=np.float32)
+            high[83:87, 130:134] = 0.8
+        coc = rng.uniform(-4.2, 3.6, (h, w)).astype(np.float32)
+        baseline = scatter_highlights(
+            high.copy(),
+            coc,
+            2.8,
+            row_chunk_height=31,
+            field_optics=True,
+            _sparse_radiance_roi=False,
+        )
+        compact = scatter_highlights(
+            high.copy(),
+            coc,
+            2.8,
+            row_chunk_height=31,
+            field_optics=True,
+            _sparse_radiance_roi=True,
+        )
+        np.testing.assert_allclose(compact, baseline, rtol=0.0, atol=2e-6)
+        bgr = rng.integers(0, 256, size=(h, w, 3), dtype=np.uint8)
+        np.testing.assert_array_equal(
+            highlights.composite_highlights(bgr, bgr, compact),
+            highlights.composite_highlights(bgr, bgr, baseline),
+        )
