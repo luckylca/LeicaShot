@@ -41,6 +41,7 @@ def make_parser() -> argparse.ArgumentParser:
     ):
         parser.add_argument("--" + key, type=Path, required=True)
     parser.add_argument("--arnet-split-dir", type=Path)
+    parser.add_argument("--arnet-split-edge", type=int, default=256)
     parser.add_argument("--subject-point", action="append", default=[])
     parser.add_argument(
         "--matte-tile-size", type=int, choices=(512, 768, 1024), default=512
@@ -177,11 +178,14 @@ def main() -> int:
             raise FileNotFoundError(f"{name} missing: {path}")
     if args.arnet_split_dir and not args.arnet_split_dir.is_dir():
         raise FileNotFoundError(args.arnet_split_dir)
+    if not 64 <= args.arnet_split_edge <= 512 or args.arnet_split_edge % 2:
+        raise ValueError("arnet-split-edge must be even and in [64, 512]")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["LAIKA_SAM_DISABLE_CPU_ARENA"] = "1"
     if args.arnet_split_dir:
         env["LAIKA_ARNET_SPLIT_DIR"] = str(args.arnet_split_dir.resolve())
+        env["LAIKA_ARNET_SPLIT_EDGE"] = str(args.arnet_split_edge)
     else:
         env.pop("LAIKA_ARNET_SPLIT_DIR", None)
     # A fresh process per trial prevents previously loaded ONNX sessions
@@ -287,6 +291,7 @@ def main() -> int:
             "arnet_split_dir": str(args.arnet_split_dir)
             if args.arnet_split_dir
             else None,
+            "arnet_split_edge": args.arnet_split_edge,
             "memory_budget_mib": args.memory_budget_mib,
         },
         "ranked_by_median_wall_time": ranking,
