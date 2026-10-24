@@ -1,4 +1,4 @@
-﻿# Verified real-photo optical pupil-cache experiment — Windows 2026-10-25
+# Verified real-photo optical pupil-cache experiment — Windows 2026-10-25
 
 ## Tested algorithm
 
