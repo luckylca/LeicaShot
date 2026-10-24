@@ -786,3 +786,141 @@ def test_arnet_split_graph_config_rejects_unverified_or_invalid_size(
             session_factory=lambda *_args, **_kwargs: FakeSession(),
             split_graph_edge=255,
         )
+
+
+@pytest.mark.parametrize(
+    ("setting", "explicit", "expected"),
+    [
+        (None, None, False),
+        ("0", None, False),
+        ("false", None, False),
+        ("1", False, False),
+        ("0", True, True),
+    ],
+)
+def test_low_memory_arnet_cpu_arena_is_reversible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    setting: str | None,
+    explicit: bool | None,
+    expected: bool,
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    if setting is None:
+        monkeypatch.delenv("LAIKA_ARNET_CPU_ARENA", raising=False)
+    else:
+        monkeypatch.setenv("LAIKA_ARNET_CPU_ARENA", setting)
+    captured = {}
+
+    def factory(path: str, **kwargs: Any) -> FakeSession:
+        captured.update(kwargs)
+        return FakeSession()
+
+    with BokehMeARNet(
+        model,
+        strategy="low-memory",
+        expected_sha256=digest,
+        reuse_cpu_arena=explicit,
+        session_factory=factory,
+    ) as engine:
+        assert engine.reuse_cpu_arena is expected
+    options = captured["sess_options"]
+    assert options.enable_cpu_mem_arena is expected
+    assert options.enable_mem_pattern is False
+    assert options.enable_mem_reuse is True
+
+
+def test_invalid_arnet_arena_setting_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    monkeypatch.setenv("LAIKA_ARNET_CPU_ARENA", "unrecognized")
+    with pytest.raises(ValueError, match="LAIKA_ARNET_CPU_ARENA"):
+        BokehMeARNet(
+            model,
+            expected_sha256=digest,
+            session_factory=lambda *_args, **_kwargs: FakeSession(),
+        )
+
+
+def test_arnet_arena_periodic_shrink_preserves_tile_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    fake_ort = sys.modules["onnxruntime"]
+
+    class FakeRunOptions:
+        def __init__(self) -> None:
+            self.entries = {}
+
+        def add_run_config_entry(self, key: str, value: str) -> None:
+            self.entries[key] = value
+
+    fake_ort.RunOptions = FakeRunOptions
+
+    class CapturingSession(FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.options = []
+
+        def run(self, names, values, run_options=None):
+            self.options.append(run_options)
+            return super().run(names, values)
+
+    session = CapturingSession()
+    model, digest = _model_file(tmp_path)
+    with BokehMeARNet(
+        model,
+        strategy="low-memory",
+        expected_sha256=digest,
+        inference_tile_edge=64,
+        full_inference_pixel_limit=100,
+        reuse_cpu_arena=True,
+        arena_shrink_every_tiles=2,
+        session_factory=lambda *_args, **_kwargs: session,
+    ) as engine:
+        out = engine.infer(
+            np.zeros((130, 150, 3), dtype=np.float32),
+            np.zeros((130, 150), dtype=np.float32),
+        )
+        assert out.tile_count == 9
+        assert engine.arena_shrink_every_tiles == 2
+    assert len(session.options) == 9
+    assert sum(option is not None for option in session.options) == 4
+    assert all(
+        o.entries == {"memory.enable_memory_arena_shrinkage": "cpu:0"}
+        for o in session.options
+        if o is not None
+    )
+
+
+def test_arnet_arena_shrink_disabled_when_arena_off(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    with BokehMeARNet(
+        model,
+        expected_sha256=digest,
+        reuse_cpu_arena=False,
+        arena_shrink_every_tiles=32,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+    ) as engine:
+        assert engine.arena_shrink_every_tiles == 0
+        assert engine.runtime_info.cpu_arena_reuse is False
+
+
+def test_arnet_invalid_shrink_tile_interval_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    with pytest.raises(ValueError, match="arena_shrink_every_tiles"):
+        BokehMeARNet(
+            model,
+            expected_sha256=digest,
+            arena_shrink_every_tiles=-5,
+            session_factory=lambda *_args, **_kwargs: FakeSession(),
+        )

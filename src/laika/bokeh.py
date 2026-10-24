@@ -72,6 +72,8 @@ class BokehRuntimeInfo:
     intra_op_num_threads: int
     inference_tile_edge: int
     full_inference_pixel_limit: int
+    cpu_arena_reuse: bool
+    arena_shrink_every_tiles: int
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -142,6 +144,8 @@ class BokehMeARNet:
         session_factory: Any | None = None,
         split_graph_dir: str | os.PathLike[str] | None = None,
         split_graph_edge: int = 256,
+        reuse_cpu_arena: bool | None = None,
+        arena_shrink_every_tiles: int | None = None,
     ) -> None:
         if strategy not in BOKEH_STRATEGIES:
             raise ValueError(f"strategy must be one of {', '.join(BOKEH_STRATEGIES)}")
@@ -164,6 +168,45 @@ class BokehMeARNet:
 
         if split_graph_edge < 64 or split_graph_edge % 2:
             raise ValueError("split_graph_edge must be even and at least 64")
+        # Reusing the CPU allocator across hundreds of equal-sized convolution
+        # tiles avoids repeatedly allocating large feature maps. Keep the
+        # dynamic-shape memory pattern disabled for low-memory workers.
+        # A per-process opt-out preserves the original low-RSS strategy for
+        # tightly constrained or multi-worker deployments.
+        if reuse_cpu_arena is None:
+            arena_setting = os.environ.get("LAIKA_ARNET_CPU_ARENA", "0").strip().lower()
+            if arena_setting not in {
+                "1",
+                "0",
+                "true",
+                "false",
+                "yes",
+                "no",
+                "on",
+                "off",
+            }:
+                raise ValueError("LAIKA_ARNET_CPU_ARENA must be 1/0 or true/false")
+            reuse_cpu_arena = arena_setting in {"1", "true", "yes", "on"}
+        elif not isinstance(reuse_cpu_arena, bool):
+            raise TypeError("reuse_cpu_arena must be a bool or None")
+        self.reuse_cpu_arena = strategy == "balanced" or reuse_cpu_arena
+        if arena_shrink_every_tiles is None:
+            raw_interval = os.environ.get("LAIKA_ARNET_ARENA_SHRINK_TILES", "0")
+            try:
+                arena_shrink_every_tiles = int(raw_interval)
+            except ValueError as exc:
+                raise ValueError(
+                    "LAIKA_ARNET_ARENA_SHRINK_TILES must be an integer"
+                ) from exc
+        if (
+            not isinstance(arena_shrink_every_tiles, int)
+            or not 0 <= arena_shrink_every_tiles <= 4096
+        ):
+            raise ValueError("arena_shrink_every_tiles must be between 0 and 4096")
+        self.arena_shrink_every_tiles = (
+            arena_shrink_every_tiles if self.reuse_cpu_arena else 0
+        )
+        self._arena_tile_calls = 0
         self._split_graph_edge = split_graph_edge
         self._split_sessions: tuple[Any, Any, Any] | None = None
         self._split_graph_paths: tuple[Path, Path, Path] | None = None
@@ -198,9 +241,10 @@ class BokehMeARNet:
         options.inter_op_num_threads = 1
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        options.enable_cpu_mem_arena = strategy == "balanced"
+        options.enable_cpu_mem_arena = self.reuse_cpu_arena
         options.enable_mem_pattern = strategy == "balanced"
         options.enable_mem_reuse = True
+        self._ort = ort
         factory = session_factory or ort.InferenceSession
         try:
             session = factory(
@@ -270,6 +314,8 @@ class BokehMeARNet:
             intra_op_num_threads=self.intra_op_num_threads,
             inference_tile_edge=self.inference_tile_edge,
             full_inference_pixel_limit=self.full_inference_pixel_limit,
+            cpu_arena_reuse=self.reuse_cpu_arena,
+            arena_shrink_every_tiles=self.arena_shrink_every_tiles,
         )
 
     def infer(
@@ -515,10 +561,28 @@ class BokehMeARNet:
         preprocess_seconds = time.perf_counter() - started
 
         inference_started = time.perf_counter()
-        output = self._session.run(
-            [BOKEH_OUTPUT],
-            {"image": tensor, "defocus": defocus_tensor},
-        )[0]
+        self._arena_tile_calls += 1
+        if (
+            self.arena_shrink_every_tiles
+            and self._arena_tile_calls % self.arena_shrink_every_tiles == 0
+        ):
+            # The next tiles still use the same ONNX session and fixed
+            # model; tell ORT to give back retained arena regions after
+            # this inference. No change to convolution calculations.
+            run_options = self._ort.RunOptions()
+            run_options.add_run_config_entry(
+                "memory.enable_memory_arena_shrinkage", "cpu:0"
+            )
+            output = self._session.run(
+                [BOKEH_OUTPUT],
+                {"image": tensor, "defocus": defocus_tensor},
+                run_options=run_options,
+            )[0]
+        else:
+            output = self._session.run(
+                [BOKEH_OUTPUT],
+                {"image": tensor, "defocus": defocus_tensor},
+            )[0]
         inference_seconds = time.perf_counter() - inference_started
         if (
             output.dtype != np.float32
