@@ -939,6 +939,9 @@ class LaikaProcessingEngine:
             sam_options: dict[str, Any] = {"intra_op_num_threads": self.threads}
             if os.environ.get("LAIKA_SAM_DISABLE_CPU_ARENA") == "1":
                 sam_options["disable_cpu_mem_arena"] = True
+            sam_split_dir = os.environ.get("LAIKA_SAM_SPLIT_DIR")
+            if sam_split_dir:
+                sam_options["split_graph_dir"] = sam_split_dir
             sam_engine = self._sam_factory(self.sam_model_dir, **sam_options)
             sam_owned = True
         stages["subject.sam_model_load"] = (

@@ -637,3 +637,41 @@ def test_sam_cpu_arena_opt_in_only_low_memory(
         engine.process_file(source, output, options=options)
     assert output.exists()
     assert bool(called[0].get("disable_cpu_mem_arena", False)) == expected
+
+
+@pytest.mark.parametrize("strategy", ["low-memory", "balanced"])
+def test_sam_split_env_passes_only_to_low_memory_strategy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    strategy: str,
+) -> None:
+    monkeypatch.setenv("LAIKA_SAM_SPLIT_DIR", "C:/verified/sam-two-part")
+    image = tmp_path / "source.png"
+    output = tmp_path / "output.png"
+    _source(image)
+    engine = _engine(mode="bokeh", strategy=strategy)
+    engine.sam_model_dir = tmp_path / "sam-models"
+    engine.vitmatte_model_path = tmp_path / "matte.onnx"
+    calls: list[dict[str, Any]] = []
+
+    def factory(_directory: Path, **kwargs: Any) -> FakeSamEngine:
+        calls.append(kwargs)
+        return FakeSamEngine()
+
+    engine._sam_factory = factory
+    with engine:
+        engine.process_file(
+            image,
+            output,
+            options=ProcessingOptions(
+                mode="bokeh",
+                strategy=strategy,
+                subject_points=((0.5, 0.5),),
+                matte_tile_size=512,
+            ),
+        )
+    assert output.exists()
+    if strategy == "low-memory":
+        assert calls[0]["split_graph_dir"] == "C:/verified/sam-two-part"
+    else:
+        assert "split_graph_dir" not in calls[0]

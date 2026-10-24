@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -424,3 +425,71 @@ def test_input_tensor_must_have_expected_shape_and_contiguity() -> None:
     with pytest.raises(ValueError, match="C-contiguous"):
         non_contiguous = np.zeros((1, 3, 1024, 1025), dtype=np.float32)[:, :, :, :1024]
         engine.predict(non_contiguous, [[1, 1]], [1])
+
+
+def test_verified_sam_split_manifest_and_session_contract(
+    tmp_path: Path,
+) -> None:
+    import hashlib
+    import json
+
+    from laika.sam_encoder_split import (
+        SAM_SPLIT_BRIDGE_NAMES,
+        SAM_SPLIT_CUT_INDEX,
+        SAM_SPLIT_FILENAMES,
+        TwoPartSamEncoder,
+        verify_sam_split_graphs,
+    )
+
+    files = {}
+    for name in SAM_SPLIT_FILENAMES:
+        data = f"fixture-{name}".encode()
+        (tmp_path / name).write_bytes(data)
+        files[name] = hashlib.sha256(data).hexdigest()
+    report = {
+        "schema_version": 1,
+        "source_encoder_sha256": "a" * 64,
+        "cut_index": SAM_SPLIT_CUT_INDEX,
+        "bridge_names": list(SAM_SPLIT_BRIDGE_NAMES),
+        "graphs": files,
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(report), encoding="utf8")
+    assert verify_sam_split_graphs(tmp_path, "a" * 64) == tuple(
+        tmp_path / name for name in SAM_SPLIT_FILENAMES
+    )
+    with pytest.raises(ValueError, match="source"):
+        verify_sam_split_graphs(tmp_path, "b" * 64)
+
+    class Prefix:
+        def get_inputs(self):
+            return [SimpleNamespace(name="image")]
+
+        def run(self, outputs, feed):
+            assert outputs == list(SAM_SPLIT_BRIDGE_NAMES)
+            assert set(feed) == {"image"}
+            return [np.ones((1, 1, 2, 2), dtype=np.float32) * n for n in (1, 2, 3)]
+
+    class Suffix:
+        def get_outputs(self):
+            return [SimpleNamespace(name=name) for name in SAM_FEATURE_OUTPUTS]
+
+        def run(self, outputs, feed):
+            assert outputs == list(SAM_FEATURE_OUTPUTS)
+            assert set(feed) == set(SAM_SPLIT_BRIDGE_NAMES)
+            assert [
+                float(feed[name][0, 0, 0, 0]) for name in SAM_SPLIT_BRIDGE_NAMES
+            ] == [1, 2, 3]
+            return [np.full((1, 1), n, dtype=np.float32) for n in (4, 5, 6)]
+
+    session = TwoPartSamEncoder(Prefix(), Suffix())
+    assert [value.name for value in session.get_inputs()] == ["image"]
+    assert [value.name for value in session.get_outputs()] == list(SAM_FEATURE_OUTPUTS)
+    selected = session.run(
+        ["image_embeddings", "image_features_0"],
+        {"image": np.zeros((1, 3, 2, 2), dtype=np.float32)},
+    )
+    assert float(selected[0][0, 0]) == 6.0
+    assert float(selected[1][0, 0]) == 4.0
+    (tmp_path / SAM_SPLIT_FILENAMES[1]).write_bytes(b"modified")
+    with pytest.raises(ValueError, match="checksum"):
+        verify_sam_split_graphs(tmp_path, "a" * 64)

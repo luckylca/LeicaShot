@@ -571,13 +571,22 @@ class Sam2TinyOnnx:
         intra_op_num_threads: int = 1,
         session_factory: Callable[[str | Path, int], Any] | None = None,
         disable_cpu_mem_arena: bool = False,
+        split_encoder_paths: tuple[Path, Path] | None = None,
     ) -> None:
         if intra_op_num_threads < 1:
             raise ValueError("intra_op_num_threads must be positive")
         factory = session_factory or partial(
             _onnx_session, disable_cpu_mem_arena=disable_cpu_mem_arena
         )
-        self._encoder = factory(image_encoder_path, intra_op_num_threads)
+        if split_encoder_paths is None:
+            self._encoder = factory(image_encoder_path, intra_op_num_threads)
+        else:
+            from .sam_encoder_split import TwoPartSamEncoder
+
+            self._encoder = TwoPartSamEncoder(
+                factory(split_encoder_paths[0], intra_op_num_threads),
+                factory(split_encoder_paths[1], intra_op_num_threads),
+            )
         self._decoder = factory(image_decoder_path, intra_op_num_threads)
         self._cache = ImageEmbeddingCache(cache_max_bytes)
         self._inference_lock = threading.RLock()
@@ -592,6 +601,7 @@ class Sam2TinyOnnx:
         intra_op_num_threads: int = 1,
         session_factory: Callable[[str | Path, int], Any] | None = None,
         disable_cpu_mem_arena: bool = False,
+        split_graph_dir: str | Path | None = None,
     ) -> Sam2TinyOnnx:
         """Load the local split graphs only when their exporter record matches."""
         directory = Path(model_dir)
@@ -625,6 +635,18 @@ class Sam2TinyOnnx:
                 actual_hash = hashlib.file_digest(stream, "sha256").hexdigest()
             if actual_hash != expected_hash:
                 raise SubjectInferenceError(f"SAM ONNX SHA-256 mismatch: {path.name}")
+        split_encoder_paths = None
+        if split_graph_dir is not None:
+            from .sam_encoder_split import verify_sam_split_graphs
+
+            try:
+                split_encoder_paths = verify_sam_split_graphs(
+                    Path(split_graph_dir), hashes[0][1]
+                )
+            except (OSError, ValueError) as exc:
+                raise SubjectInferenceError(
+                    f"invalid SAM split graph files: {exc}"
+                ) from exc
         instance = cls(
             encoder_path,
             decoder_path,
@@ -632,6 +654,7 @@ class Sam2TinyOnnx:
             intra_op_num_threads=intra_op_num_threads,
             session_factory=session_factory,
             disable_cpu_mem_arena=disable_cpu_mem_arena,
+            split_encoder_paths=split_encoder_paths,
         )
         instance.image_encoder_sha256 = hashes[0][1]
         instance.image_decoder_sha256 = hashes[1][1]
