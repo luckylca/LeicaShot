@@ -620,6 +620,7 @@ def _scatter_field_optical(
     sparse_mass_roi: bool = False,
     sparse_radiance_roi: bool = False,
     output_support_roi: bool = False,
+    pupil_cache_budget_bytes: int = 32 * 1024 * 1024,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -635,6 +636,14 @@ def _scatter_field_optical(
                 (x, y, wx, wy, x0, x1, y0, y1, _optical_shape(x, y, width, height))
             )
     pupil_shapes = [node[8] for node in nodes]
+    # Signed CoC changes layer weights, not pupil geometry. Cache equal
+    # absolute radii, bounded by the unique kernels' resident byte count.
+    radius_counts: dict[int, int] = {}
+    for level in levels:
+        radius = abs(level)
+        radius_counts[radius] = radius_counts.get(radius, 0) + 1
+    pupil_cache: dict[int, list[Any]] = {}
+    pupil_cache_bytes = 0
     if output_support_roi:
         # Smaller bands reduce the spatial overestimation of sparse light
         # support, improving both convolution work and temporary memory.
@@ -654,11 +663,19 @@ def _scatter_field_optical(
     for level_index, level in enumerate(levels):
         _check(cancel_check)
         radius = abs(level)
-        if radius == 0:
-            zero_kernel = aperture_kernel(0, aperture).astype(np.float64)
-            kernels = [zero_kernel] * len(nodes)
-        else:
-            kernels = _field_pupil_kernels(pupil_shapes, radius, aperture)
+        kernels = pupil_cache.get(radius)
+        if kernels is None:
+            if radius == 0:
+                zero_kernel = aperture_kernel(0, aperture).astype(np.float64)
+                kernels = [zero_kernel] * len(nodes)
+            else:
+                kernels = _field_pupil_kernels(pupil_shapes, radius, aperture)
+            if radius_counts[radius] > 1 and pupil_cache_budget_bytes:
+                unique_kernels = {id(kernel): kernel for kernel in kernels}
+                required_bytes = sum(kernel.nbytes for kernel in unique_kernels.values())
+                if pupil_cache_bytes + required_bytes <= pupil_cache_budget_bytes:
+                    pupil_cache[radius] = kernels
+                    pupil_cache_bytes += required_bytes
         if mass_filter_float32:
             mass_kernel_cache: dict[int, Any] = {}
             mass_kernels = []
@@ -905,6 +922,7 @@ def scatter_highlights(
     _sparse_mass_roi: bool = True,
     _sparse_radiance_roi: bool = True,
     _output_support_roi: bool = True,
+    _pupil_cache_budget_bytes: int = 32 * 1024 * 1024,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
 
@@ -942,6 +960,8 @@ def scatter_highlights(
         raise ValueError("radius_scale must be in [1, 3]")
     if row_chunk_height < 1:
         raise ValueError("row_chunk_height must be positive")
+    if _pupil_cache_budget_bytes < 0:
+        raise ValueError("pupil cache budget must be nonnegative")
     height, width = depth.shape
     for y0 in range(0, height, 128):
         _check(cancel_check)
@@ -972,6 +992,7 @@ def scatter_highlights(
             sparse_mass_roi=_sparse_mass_roi,
             sparse_radiance_roi=_sparse_radiance_roi,
             output_support_roi=_output_support_roi,
+            pupil_cache_budget_bytes=_pupil_cache_budget_bytes,
         )
 
     output = np.zeros_like(high)
