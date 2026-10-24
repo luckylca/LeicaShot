@@ -422,3 +422,10 @@
 - Started `perf/api-benchmark-observer` from `develop` at PR #69 merge `4a38b90`. Reduced process-tree RSS polling to 100 ms and expensive USS scans to 1 s, and exposed both intervals as benchmark options. Process-tree CPU, client CPU, cgroup CPU deltas and observer scan counts are now recorded around the request window.
 - Added `scripts/benchmark_observer_overhead.py` to compare the prior 10 ms RSS+USS sampler with current settings while sampling the same separate CPU-spinning child with a touched 256 MiB allocation. On Linux ARM64 (Python 3.11.17, 2 vCPU), parent observer CPU over 20 s was 2.06 s before and 0.09 s after (95.6% lower); RSS/USS scans were 1,396/1,396 and 193/20 respectively. This synthetic result is not an API task speed claim. See the [observer report](benchmarks/api-benchmark-observer-2026-10-24.md).
 - Linux full suite passes 219 tests; Ruff check and format check pass. Next, finish PR/CI, then run the parameter-matched native-size API/direct-engine task with 256-row Bokeh chunks and cgroup CPU/memory telemetry.
+
+## 2026-10-24 — PR #70 merged; start parameter-matched API/engine validation
+
+- Squash-merged [PR #70](https://github.com/luckylca/LeicaShot/pull/70) as `f6fb217` after all eight CI checks passed. Immediately created `perf/api-engine-matched-2g` from the new `develop` head.
+- Reused the authorized model mounts and exact 5760×3840 CC0 input from the previous no-swap 2 GiB API run. Verified the input SHA and M9, Depth, ARNet, SAM encoder/decoder, and ViTMatte model hashes against the earlier report. The previous API comparison used Bokeh row chunk 256 while the direct-engine comparison used 128, so the new run explicitly aligns both at 256.
+- Updated `scripts/benchmark_processing_pipeline.py` to default its sampled process-tree RSS cadence to 100 ms, expose the interval, and report sample count, process-tree CPU and cgroup v2 CPU delta. Kept total task wall time and added the `process_file` call duration separately.
+- Full API/direct run, output hashes and 2 GiB cgroup measurements are pending; no throughput conclusion is made yet.

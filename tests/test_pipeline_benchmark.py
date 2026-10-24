@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 from laika.cgroup import memory_stats as _cgroup_memory
 
@@ -70,3 +73,18 @@ def test_benchmark_script_prefers_checkout_over_stale_pythonpath(tmp_path) -> No
 
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
+
+
+def test_process_tree_peak_rss_sampling_interval_is_configurable() -> None:
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "benchmark_processing_pipeline.py"
+    )
+    module = runpy.run_path(str(script))
+    peak_type = module["ProcessTreePeak"]
+
+    assert peak_type().interval_seconds == 0.1
+    assert peak_type(0.25).interval_seconds == 0.25
+    with pytest.raises(ValueError, match="interval must be positive"):
+        peak_type(0)

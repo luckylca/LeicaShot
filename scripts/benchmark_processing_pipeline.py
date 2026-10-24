@@ -77,10 +77,14 @@ def _source_provenance() -> dict[str, Any]:
 class ProcessTreePeak:
     """Sample this benchmark and all descendants while the task is running."""
 
-    def __init__(self, interval_seconds: float = 0.01) -> None:
+    def __init__(self, interval_seconds: float = 0.1) -> None:
+        if interval_seconds <= 0:
+            raise ValueError("RSS sampling interval must be positive")
         self.process = psutil.Process()
         self.interval_seconds = interval_seconds
         self.peak_bytes = 0
+        self.latest_bytes = 0
+        self.sample_count = 0
         self._stage = "startup"
         self._stage_peaks: dict[str, int] = {}
         self._stage_lock = threading.Lock()
@@ -108,6 +112,8 @@ class ProcessTreePeak:
         while not self._stop.is_set():
             total = self.current_bytes()
             self.peak_bytes = max(self.peak_bytes, total)
+            self.latest_bytes = total
+            self.sample_count += 1
             with self._stage_lock:
                 self._stage_peaks[self._stage] = max(
                     self._stage_peaks.get(self._stage, 0), total
@@ -115,6 +121,9 @@ class ProcessTreePeak:
             self._stop.wait(self.interval_seconds)
 
     def __enter__(self) -> ProcessTreePeak:
+        self.latest_bytes = self.current_bytes()
+        self.peak_bytes = self.latest_bytes
+        self.sample_count = 1
         self._thread.start()
         return self
 
@@ -129,6 +138,34 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _process_tree_cpu_seconds() -> float:
+    total = 0.0
+    for process in [psutil.Process(), *psutil.Process().children(recursive=True)]:
+        try:
+            times = process.cpu_times()
+            total += times.user + times.system
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            continue
+    return total
+
+
+def _cgroup_cpu_snapshot() -> dict[str, int] | None:
+    path = Path("/sys/fs/cgroup/cpu.stat")
+    if not path.is_file():
+        return None
+    try:
+        values = {
+            key: int(value)
+            for key, value in (
+                line.split(maxsplit=1)
+                for line in path.read_text(encoding="ascii").splitlines()
+            )
+        }
+    except (OSError, ValueError):
+        return None
+    return values or None
 
 
 def _parse_crop(value: str) -> CompositionCrop:
@@ -181,6 +218,7 @@ def main() -> int:
     parser.add_argument("--focus-y", type=float, default=0.5)
     parser.add_argument("--aperture", type=float, default=2.8)
     parser.add_argument("--bokeh-row-chunk-height", type=int, default=256)
+    parser.add_argument("--rss-sample-interval-seconds", type=float, default=0.1)
     parser.add_argument(
         "--progress-log",
         type=Path,
@@ -189,8 +227,12 @@ def main() -> int:
     args = parser.parse_args()
     if (args.width is None) != (args.height is None):
         parser.error("--width and --height must be supplied together")
-    if args.threads < 1 or args.bokeh_row_chunk_height < 1:
-        parser.error("threads and row chunk height must be positive")
+    if (
+        args.threads < 1
+        or args.bokeh_row_chunk_height < 1
+        or args.rss_sample_interval_seconds <= 0
+    ):
+        parser.error("threads, row chunk height, and RSS interval must be positive")
     subject_points = []
     for item in args.subject_point:
         try:
@@ -200,6 +242,8 @@ def main() -> int:
             parser.error("--subject-point must use normalized X,Y coordinates")
 
     source_provenance = _source_provenance()
+    process_cpu_before = _process_tree_cpu_seconds()
+    cgroup_cpu_before = _cgroup_cpu_snapshot()
     started = time.perf_counter()
     progress_context = (
         args.progress_log.open("w", encoding="utf-8")
@@ -217,7 +261,7 @@ def main() -> int:
             strategy=args.strategy,
             threads=args.threads,
         ) as engine,
-        ProcessTreePeak() as peak,
+        ProcessTreePeak(args.rss_sample_interval_seconds) as peak,
     ):
 
         def on_progress(event: Any) -> None:
@@ -244,12 +288,13 @@ def main() -> int:
             else:
                 stage = event.stage
             peak.set_stage(stage)
+            current_rss = peak.latest_bytes
             if progress_stream is not None:
                 record = {
                     "stage": stage,
                     "fraction": event.fraction,
                     "elapsed_seconds": event.elapsed_seconds,
-                    "process_tree_rss_bytes": peak.current_bytes(),
+                    "process_tree_rss_bytes": current_rss,
                     "cgroup_memory": _cgroup_memory(),
                 }
                 if getattr(event, "details", None) is not None:
@@ -258,11 +303,12 @@ def main() -> int:
                 progress_stream.flush()
             print(
                 f"progress stage={stage} fraction={event.fraction:.4f} "
-                f"rss={peak.current_bytes()}",
+                f"rss={current_rss}",
                 file=sys.stderr,
                 flush=True,
             )
 
+        task_started = time.perf_counter()
         result = engine.process_file(
             args.input,
             args.output,
@@ -282,6 +328,10 @@ def main() -> int:
             ),
             progress_callback=on_progress,
         )
+        engine_process_file_wall_seconds = time.perf_counter() - task_started
+    task_wall_seconds = time.perf_counter() - started
+    process_cpu_after = _process_tree_cpu_seconds()
+    cgroup_cpu_after = _cgroup_cpu_snapshot()
     report = {
         "source": source_provenance,
         "input": str(args.input),
@@ -313,8 +363,26 @@ def main() -> int:
         },
         "models": result.models,
         "stage_seconds": result.stage_seconds,
-        "task_wall_seconds": time.perf_counter() - started,
+        "task_wall_seconds": task_wall_seconds,
+        "engine_process_file_wall_seconds": engine_process_file_wall_seconds,
+        "process_tree_cpu_seconds": max(0.0, process_cpu_after - process_cpu_before),
+        "cgroup_cpu_before": cgroup_cpu_before,
+        "cgroup_cpu_after": cgroup_cpu_after,
+        "cgroup_cpu_seconds": (
+            max(
+                0,
+                cgroup_cpu_after.get("usage_usec", 0)
+                - cgroup_cpu_before.get("usage_usec", 0),
+            )
+            / 1_000_000
+            if cgroup_cpu_before is not None and cgroup_cpu_after is not None
+            else None
+        ),
         "process_tree_peak_rss_bytes": peak.peak_bytes,
+        "process_tree_rss_sampling": {
+            "interval_seconds": peak.interval_seconds,
+            "sample_count": peak.sample_count,
+        },
         "process_tree_stage_peak_rss_bytes": peak.stage_peaks(),
         "cgroup_memory": _cgroup_memory(),
         "output_bytes": result.output_bytes,
