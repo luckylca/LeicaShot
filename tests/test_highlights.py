@@ -872,3 +872,26 @@ def test_compact_optical_band_exact_vs_full_width(
         highlight, coc, 2.8, _compact_band_output=True, **kwargs
     )
     np.testing.assert_array_equal(compact, original)
+
+
+@pytest.mark.parametrize("variant", ["empty", "single", "border", "dense", "vertical"])
+def test_softening_zero_radiance_line_skip_exact(variant: str) -> None:
+    rng = np.random.default_rng(42)
+    light = np.zeros((47, 73, 3), dtype=np.float32)
+    if variant == "single":
+        light[13, 18] = (0.5, 0.8, 0.1)
+    elif variant == "border":
+        light[0, 0] = (0.5, 0.8, 0.1)
+        light[-1, -1] = (0.7, 0.4, 0.6)
+    elif variant == "dense":
+        light = rng.random(light.shape, dtype=np.float32)
+    elif variant == "vertical":
+        light[:, 51] = rng.random((47, 3), dtype=np.float32)
+    coc = np.full((47, 73), 5.0, dtype=np.float32)
+    coc[::3, :] = 0.0
+    original = light.copy()
+    candidate = light.copy()
+    orig_changed = soften_highlights_inplace(original, coc, _skip_zero_lines=False)
+    new_changed = soften_highlights_inplace(candidate, coc, _skip_zero_lines=True)
+    assert orig_changed == new_changed
+    np.testing.assert_array_equal(candidate, original)
