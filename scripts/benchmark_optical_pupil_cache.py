@@ -59,9 +59,14 @@ def main() -> int:
             if reference is None:
                 reference = result.copy()
             if not np.array_equal(result, reference):
-                raise AssertionError(f"optical pupil cache changed pixels in {mode} trial")
+                raise AssertionError(
+                    f"optical pupil cache changed pixels in {mode} trial"
+                )
             observations[mode].append(round(elapsed, 6))
-            print(json.dumps({"trial": repeat, "mode": mode, "seconds": elapsed}), flush=True)
+            print(
+                json.dumps({"trial": repeat, "mode": mode, "seconds": elapsed}),
+                flush=True,
+            )
 
     medians = {mode: statistics.median(values) for mode, values in observations.items()}
     print(
