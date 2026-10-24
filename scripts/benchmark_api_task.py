@@ -145,6 +145,43 @@ def _stream_artifact(response: Any, destination: Path | None) -> tuple[int, str]
     return byte_count, digest.hexdigest()
 
 
+def _get_task_status(
+    client: Any,
+    url: str,
+    headers: dict[str, str],
+    *,
+    deadline: float,
+    server_process: subprocess.Popen[str] | None = None,
+    max_consecutive_errors: int = 12,
+) -> tuple[Any, int]:
+    """Retry transient transport errors while polling the idempotent status route."""
+    import httpx
+
+    retries = 0
+    consecutive_errors = 0
+    while time.monotonic() < deadline:
+        try:
+            response = client.get(url, headers=headers)
+        except httpx.TransportError as exc:
+            retries += 1
+            consecutive_errors += 1
+            if server_process is not None and server_process.poll() is not None:
+                raise RuntimeError(
+                    "Laika API process exited while polling task status "
+                    f"(exit code {server_process.returncode})"
+                ) from exc
+            if consecutive_errors >= max_consecutive_errors:
+                raise RuntimeError(
+                    "Laika API status route failed with "
+                    f"{consecutive_errors} consecutive transport errors"
+                ) from exc
+            time.sleep(min(0.25 * (2 ** min(consecutive_errors - 1, 3)), 2.0))
+            continue
+        response.raise_for_status()
+        return response, retries
+    raise TimeoutError("API task status polling deadline expired")
+
+
 def _indexed_path(path: Path, task_count: int, index: int) -> Path:
     if task_count == 1:
         return path
@@ -163,6 +200,7 @@ def _run_task_request(
     save_output: Path | None,
     save_preview: Path | None,
     started_at: float,
+    server_process: subprocess.Popen[str] | None = None,
 ) -> dict[str, Any]:
     import httpx
 
@@ -183,11 +221,16 @@ def _run_task_request(
         task = created.json()
         headers = {"X-Laika-Task-Token": task["access_token"]}
         deadline = time.monotonic() + timeout_seconds
+        status_poll_retries = 0
         while time.monotonic() < deadline:
-            status_response = client.get(
-                f"{base_url}{task['status_url']}", headers=headers
+            status_response, retries = _get_task_status(
+                client,
+                f"{base_url}{task['status_url']}",
+                headers,
+                deadline=deadline,
+                server_process=server_process,
             )
-            status_response.raise_for_status()
+            status_poll_retries += retries
             status = status_response.json()
             if status["status"] in ("completed", "failed", "cancelled"):
                 break
@@ -236,6 +279,7 @@ def _run_task_request(
 
     return {
         "task_id": task["id"],
+        "status_poll_retries": status_poll_retries,
         "task_wall_seconds": task_wall_seconds,
         "task_completed_elapsed_seconds": task_completed_elapsed_seconds,
         "task_finished_elapsed_seconds": time.perf_counter() - started_at,
@@ -343,6 +387,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                             if args.save_preview
                             else None,
                             started_at=started,
+                            server_process=server,
                         ),
                         range(args.task_count),
                     )

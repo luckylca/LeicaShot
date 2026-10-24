@@ -11,6 +11,7 @@ _benchmark_api = runpy.run_path(
 )
 _validate_task_count = _benchmark_api["_validate_task_count"]
 _stream_artifact = _benchmark_api["_stream_artifact"]
+_get_task_status = _benchmark_api["_get_task_status"]
 
 
 class _PNGResponse:
@@ -21,6 +22,27 @@ class _PNGResponse:
 
     def iter_bytes(self, _chunk_size: int):
         return iter(self.blocks)
+
+
+class _StatusResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+
+class _RetryingStatusClient:
+    def __init__(self, failures: int) -> None:
+        self.failures = failures
+        self.calls = 0
+
+    def get(self, _url: str, *, headers: dict[str, str]):
+        import httpx
+
+        assert headers == {"X-Laika-Task-Token": "token"}
+        self.calls += 1
+        if self.calls <= self.failures:
+            request = httpx.Request("GET", "http://localhost/status")
+            raise httpx.ReadError("connection reset", request=request)
+        return _StatusResponse()
 
 
 def test_api_benchmark_streams_and_hashes_png(tmp_path: Path) -> None:
@@ -60,3 +82,33 @@ def test_api_benchmark_task_count_cannot_exceed_admission_capacity() -> None:
 
 def test_api_benchmark_accepts_tasks_within_admission_capacity() -> None:
     _validate_task_count(2, 2)
+
+
+def test_api_status_poll_retries_transient_connection_reset(monkeypatch) -> None:
+    monkeypatch.setattr(_benchmark_api["time"], "sleep", lambda _seconds: None)
+    client = _RetryingStatusClient(failures=1)
+
+    response, retries = _get_task_status(
+        client,
+        "http://localhost/status",
+        {"X-Laika-Task-Token": "token"},
+        deadline=_benchmark_api["time"].monotonic() + 5,
+    )
+
+    assert isinstance(response, _StatusResponse)
+    assert retries == 1
+    assert client.calls == 2
+
+
+def test_api_status_poll_bounds_persistent_transport_errors(monkeypatch) -> None:
+    monkeypatch.setattr(_benchmark_api["time"], "sleep", lambda _seconds: None)
+    client = _RetryingStatusClient(failures=10)
+
+    with pytest.raises(RuntimeError, match="2 consecutive transport errors"):
+        _get_task_status(
+            client,
+            "http://localhost/status",
+            {"X-Laika-Task-Token": "token"},
+            deadline=_benchmark_api["time"].monotonic() + 5,
+            max_consecutive_errors=2,
+        )
