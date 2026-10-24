@@ -99,3 +99,23 @@ c0fe387fd6efbd60ed7836d0f44519c28fdf6802401342a2466ebee57c3465ed.
 These paired data strongly support an algorithmic advantage for this real
 input beyond warm-up and scheduling noise. They are still not a multi-photo
 benchmark, strict cgroup test, or a guarantee for dense-light photographs.
+
+## Additional genuine-photo size: 3072 x 2048 complete pipeline
+
+A separate true 3072x2048 JPEG derived from the same CC0 original
+was tested with the actual original and candidate Python CLI engines,
+using the same 9 ONNX threads and low-memory model settings.
+This is a second size/workload, NOT an independent photographed scene.
+
+| Whole-request metric | Merged develop | Compact bands |
+|---|---:|---:|
+| Complete five-model + export time | 50.9748 s | 46.2971 s |
+| Optical scatter | 11.2435 s | 6.1970 s |
+| Sampled full process RSS | 867,704,832 B | 867,323,904 B |
+| Output dimension | 3072 x 2048 | 3072 x 2048 |
+
+The entire request was 9.2% faster at 3072x2048; optical scatter was
+44.9% faster. The final PNG SHA256 values were exactly identical,
+as were the decoded RGB arrays (max channel difference zero).
+This reinforces optical-stage gains at a different pixel count;
+no material end-to-end memory reduction was measured at this size.
