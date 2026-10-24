@@ -18,6 +18,7 @@ From the `LeicaShot` virtual environment on Windows:
   --sam-model-dir "E:\codex\LeicaShot-local-data\laika-models\sam2-onnx" `
   --vitmatte-model "E:\codex\LeicaShot-local-data\laika-models\vitmatte-onnx\vitmatte-small-composition-1k.fp32.onnx" `
   --arnet-split-dir "E:\codex\LeicaShot-local-data\laika-models\arnet-split-verified" `
+  --arnet-split-edge 384 `
   --threads "1,2,4" --repeat 2 --memory-budget-mib 2048 `
   --output-dir "E:\codex\LeicaShot-local-data\benchmarks\thread-matrix"
 ```
@@ -26,6 +27,13 @@ The script launches a fresh Python process for **each** full five-model job,
 samples the process tree, records Laika's per-stage times, and compares each
 full-resolution RGB PNG against the first baseline output. Test order reverses
 for the second repetition (1, 2, 4; then 4, 2, 1) to reduce warm-up/order bias.
+
+ARNet's optional split-core tile edge may be set to 256, 384 or 512 to
+explore the latency-versus-RSS tradeoff. Run each tile edge in separate
+matrices, keeping every other setting fixed. The low-memory default
+remains 256; the experimental `LAIKA_ARNET_SPLIT_EDGE` is ignored unless
+`LAIKA_ARNET_SPLIT_DIR` is also configured. A larger edge might be faster
+but could increase peak memory; this requires on-host proof.
 
 The `speed-matrix.json` result includes median times, sampled max RSS,
 and pixel-difference metrics. The output retains a single reference PNG
