@@ -72,3 +72,30 @@ been validated. Sampled Windows RSS does not prove cgroup fit.
 Source portraits, original or derived ONNX weights and .npy intermediates
 are excluded from Git; only algorithm source, tests and text evidence
 are committed.
+
+## Actual native-20MP optical-stage ABBA, same Windows machine
+
+After the initial full five-model output test, the merged develop branch
+and this experimental branch were executed as four fresh Python processes
+in reverse-order pairing, all using the EXACT same saved native 20MP
+optical scatter input, aperture, row-chunk and local runtime environment.
+Python module import was forced from the corresponding checked-out source
+tree, not accidentally from an installed package.
+
+| Order | Implementation | Optical seconds | Sampled process RSS (bytes) |
+|---|---|---:|---:|
+| 1 | develop / full-width accumulator | 75.7617 | 962,715,648 |
+| 2 | new / compact accumulator | 43.9242 | 932,036,608 |
+| 3 | new / compact accumulator | 42.7789 | 931,151,872 |
+| 4 | develop / full-width accumulator | 75.9867 | 961,720,320 |
+
+Median old = 75.8742 seconds; new = 43.35155 seconds.
+That is a 42.9% median reduction in native 20MP scatter time.
+The highest sampled RSS in this paired optical worker fell from
+962,715,648 to 932,036,608 bytes, approximately 29.3 MiB less.
+
+All FOUR runs gave byte-identical float32 scatter output SHA256
+c0fe387fd6efbd60ed7836d0f44519c28fdf6802401342a2466ebee57c3465ed.
+These paired data strongly support an algorithmic advantage for this real
+input beyond warm-up and scheduling noise. They are still not a multi-photo
+benchmark, strict cgroup test, or a guarantee for dense-light photographs.
