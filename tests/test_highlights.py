@@ -529,3 +529,108 @@ def test_soft_bokeh_edges_returns_unchanged_for_in_focus_plane() -> None:
 
     assert not changed
     np.testing.assert_array_equal(light, original)
+
+
+def test_sparse_mass_filter_matches_full_convolution() -> None:
+    rng = np.random.default_rng(20261024)
+    for height, width, radius, box in (
+        (64, 96, 2, (0, 4, 0, 8)),
+        (85, 123, 8, (30, 40, 30, 45)),
+        (93, 111, 13, (74, 92, 99, 111)),
+        (99, 105, 0, (17, 24, 56, 69)),
+    ):
+        weights = np.zeros((height, width), dtype=np.float32)
+        y0, y1, x0, x1 = box
+        weights[y0:y1, x0:x1] = rng.random((y1 - y0, x1 - x0), dtype=np.float32)
+        kernel = highlights.aperture_kernel(radius, 2.8).astype(np.float64)
+        half = kernel.shape[0] // 2
+        expected = highlights.cv2.filter2D(
+            weights.astype(np.float64),
+            highlights.cv2.CV_64F,
+            kernel,
+            borderType=highlights.cv2.BORDER_REFLECT_101,
+        )[half : height - half or None, half : width - half or None]
+        cropped = highlights._sparse_mass_filter(
+            weights,
+            kernel,
+            height - 2 * half,
+            width - 2 * half,
+        )
+        assert cropped is not None
+        tile, offset_y, offset_x = cropped
+        result = np.zeros_like(expected)
+        result[
+            offset_y : offset_y + tile.shape[0], offset_x : offset_x + tile.shape[1]
+        ] = tile
+        np.testing.assert_allclose(result, expected, rtol=0.0, atol=5e-12)
+
+
+def test_sparse_mass_scatter_preserves_quantized_pixels() -> None:
+    rng = np.random.default_rng(19271)
+    h, w = 80, 160
+    high = np.zeros((h, w, 3), dtype=np.float32)
+    high[9:13, 10:14] = rng.random((4, 4, 3), dtype=np.float32)
+    high[51:55, 135:139] = rng.random((4, 4, 3), dtype=np.float32)
+    coc = np.full((h, w), np.float32(-3.5), dtype=np.float32)
+    coc[:, 75:] = np.float32(4.0)
+    coc[30:36, 15:20] = np.float32(1.3)
+    for chunk in (32, 128):
+        ref = scatter_highlights(
+            high.copy(), coc, 2.8, row_chunk_height=chunk, field_optics=True
+        )
+        opt = scatter_highlights(
+            high.copy(),
+            coc,
+            2.8,
+            row_chunk_height=chunk,
+            field_optics=True,
+            _sparse_mass_roi=True,
+        )
+        np.testing.assert_allclose(opt, ref, rtol=0.0, atol=1e-6)
+        base = np.full((h, w, 3), 100, dtype=np.uint8)
+        np.testing.assert_array_equal(
+            highlights.composite_highlights(base, base, opt),
+            highlights.composite_highlights(base, base, ref),
+        )
+
+
+def test_sparse_mass_scatter_matches_dense_and_border_cases() -> None:
+    rng = np.random.default_rng(10082026)
+    for pattern in ("uniform", "two_half_planes", "random", "border"):
+        h, w = 91, 137
+        high = np.zeros((h, w, 3), dtype=np.float32)
+        high[0:2, 0:2] = rng.random((2, 2, 3), dtype=np.float32)
+        high[-2:, -2:] = rng.random((2, 2, 3), dtype=np.float32)
+        if pattern == "uniform":
+            coc = np.full((h, w), 0.2, dtype=np.float32)
+        elif pattern == "two_half_planes":
+            coc = np.full((h, w), -3, dtype=np.float32)
+            coc[:, w // 2 :] = 2.4
+        elif pattern == "border":
+            coc = np.full((h, w), -4.1, dtype=np.float32)
+            coc[:4, :4] = 2.5
+            coc[-3:, -6:] = 4.1
+        else:
+            coc = rng.uniform(-4.4, 3.9, (h, w)).astype(np.float32)
+        baseline = scatter_highlights(
+            high.copy(),
+            coc,
+            2.8,
+            field_optics=True,
+            row_chunk_height=25,
+            _sparse_mass_roi=False,
+        )
+        result = scatter_highlights(
+            high.copy(),
+            coc,
+            2.8,
+            field_optics=True,
+            row_chunk_height=25,
+            _sparse_mass_roi=True,
+        )
+        np.testing.assert_allclose(result, baseline, atol=1e-6, rtol=0.0)
+        bgr = rng.integers(0, 256, size=(h, w, 3), dtype=np.uint8)
+        np.testing.assert_array_equal(
+            highlights.composite_highlights(bgr, bgr, result),
+            highlights.composite_highlights(bgr, bgr, baseline),
+        )
