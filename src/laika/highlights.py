@@ -1225,6 +1225,7 @@ def soften_highlights_inplace(
     coc: Any,
     *,
     cancel_check: Callable[[], None] | None = None,
+    _skip_zero_lines: bool = True,
 ) -> bool:
     """Apply the reference's CoC-weighted, separable tent softening in place."""
     frame = np.asarray(light)
@@ -1256,6 +1257,12 @@ def soften_highlights_inplace(
             if not bool(np.any(row_weight > 0.0)):
                 continue
             row = values[line_index]
+            # With zero input radiance, both the weighted source and its
+            # prefix-integral color are exactly zero. This line cannot
+            # gain light during this same-axis pass; the next axis pass
+            # can still introduce energy and will be checked afresh.
+            if _skip_zero_lines and not bool(np.any(row)):
+                continue
             half_width = axis_half[line_index].astype(np.float64, copy=False)
             weighted_color = row.astype(np.float64) * row_weight[:, None]
             prefix_weight = np.empty(line_length + 1, dtype=np.float64)
