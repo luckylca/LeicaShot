@@ -78,3 +78,29 @@ strict 2/4GiB Linux constraints require additional acceptance coverage.
 Authorized checkpoints, locally captured per-stage arrays, photos,
 and rendered outputs remain only under E:\codex\LeicaShot-local-data and
 are deliberately excluded from Git.
+
+## Independent default-enabled production invocation
+
+A second validation used only the three-file standalone branch derived
+directly from develop, without the pupil cache and without monkey-patching
+any function. The actual Python CLI processing pipeline was executed in
+a fresh process with 9 ONNX CPU threads and all five models enabled.
+
+- Full native 5472x3648 job: 191.0262 seconds.
+- Optical scatter: 83.7020 seconds.
+- Sampled process-tree RSS peak: 1,374,720,000 bytes (1311.04 MiB).
+- Output PNG SHA256: 1348289adb6c6a05e32e7468af5de38de56cccac715457266ee41194526a4070.
+- Final image SHA256 and decoded RGB arrays EXACTLY equal to original
+  unoptimized production output (zero differing pixels/channels).
+- Relative to the original 345.0583s run, this independent run was
+  44.6% faster end-to-end; optical scatter was about 2.96x as fast.
+
+The difference between the independent run (191.0s) and the first
+experimental instrumented run (168.3s) is NOT attributed to the pupil
+cache or a specific cause without controlled paired tests. Both are
+single-run observations on the same Windows laptop, not promises for
+all scenes and CPU loads. The standalone implementation is independent
+of the pupil-cache optimization.
+
+Full Python regression suite in the independent worktree: 240 passed.
+Ruff lint and format checks passed.
