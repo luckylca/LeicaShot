@@ -621,6 +621,7 @@ def _scatter_field_optical(
     sparse_radiance_roi: bool = False,
     output_support_roi: bool = False,
     coc_interval_pruning: bool = False,
+    compact_band_output: bool = True,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -741,8 +742,17 @@ def _scatter_field_optical(
                         nodes, kernels, mass_kernels, strict=True
                     )
                 ]
-            mass_total = np.zeros((row_count, width), dtype=np.float64)
-            radiance_total = np.zeros((row_count, width, 3), dtype=np.float64)
+            # Pixels outside the union of active node spans receive zero
+            # mass and radiance. Store only that horizontal interval,
+            # preserving the original accumulation order in valid regions.
+            compact = compact_band_output and active_node_intervals is not None
+            band_x0 = min(x0 for _, _, _, x0, _ in active_nodes) if compact else 0
+            band_x1 = max(x1 for _, _, _, _, x1 in active_nodes) if compact else width
+            band = slice(band_x0, band_x1)
+            mass_total = np.zeros((row_count, band_x1 - band_x0), dtype=np.float64)
+            radiance_total = np.zeros(
+                (row_count, band_x1 - band_x0, 3), dtype=np.float64
+            )
 
             for node, kernel, mass_kernel, x0, x1 in active_nodes:
                 _, _, wx, wy, _, _, node_y0, node_y1, _ = node
@@ -804,7 +814,7 @@ def _scatter_field_optical(
                     np.multiply(node_mass, node_weight, out=node_mass)
                     mass_total[
                         y0 - out_y0 + mass_dy : y0 - out_y0 + mass_dy + node_height,
-                        x0 + mass_dx : x0 + mass_dx + node_width,
+                        x0 - band_x0 + mass_dx : x0 - band_x0 + mass_dx + node_width,
                     ] += node_mass
                     mass = None
                 else:
@@ -838,7 +848,7 @@ def _scatter_field_optical(
                     rows = slice(row_offset, row_offset + y1 - y0)
                     if node_mass.dtype == np.float64:
                         np.multiply(node_mass, node_weight, out=node_mass)
-                        mass_total[rows, x0:x1] += node_mass
+                        mass_total[rows, x0 - band_x0 : x1 - band_x0] += node_mass
                     else:
                         mass_total[rows, x0:x1] += node_mass * node_weight
                 # Keep the mass filter for occlusion; only empty radiance is skipped.
@@ -862,7 +872,7 @@ def _scatter_field_optical(
                         )
                         radiance_total[
                             y0 - out_y0 + dy : y0 - out_y0 + dy + rh,
-                            x0 + dx : x0 + dx + rw,
+                            x0 - band_x0 + dx : x0 - band_x0 + dx + rw,
                         ] += node_radiance
                     else:
                         radiance = cv2.filter2D(
@@ -887,7 +897,9 @@ def _scatter_field_optical(
                             radiance_node_weight[:, :, None],
                             out=node_radiance,
                         )
-                        radiance_total[rows, x0:x1] += node_radiance
+                        radiance_total[rows, x0 - band_x0 : x1 - band_x0] += (
+                            node_radiance
+                        )
                 del (
                     selection,
                     source_high,
@@ -896,7 +908,7 @@ def _scatter_field_optical(
                     weighted,
                     mass,
                 )
-            receiver_coc = depth[out_y0:out_y1] * np.float32(radius_scale)
+            receiver_coc = depth[out_y0:out_y1, band] * np.float32(radius_scale)
             alpha = np.clip(mass_total, 0.0, 1.0).astype(np.float32)
             behind = np.clip(receiver_coc - np.float32(level + 1), 0.0, 1.0)
             footprint = np.minimum(
@@ -906,7 +918,7 @@ def _scatter_field_optical(
             visibility = 1.0 - behind * (1.0 - footprint)
             take = np.minimum(
                 alpha * visibility,
-                np.maximum(0.0, 1.0 - coverage[out_y0:out_y1]),
+                np.maximum(0.0, 1.0 - coverage[out_y0:out_y1, band]),
             )
             ratio = np.zeros_like(alpha)
             np.divide(take, alpha, out=ratio, where=alpha > np.float32(1e-8))
@@ -914,9 +926,9 @@ def _scatter_field_optical(
             own_ratio = np.zeros_like(alpha)
             np.divide(local, alpha, out=own_ratio, where=alpha > np.float32(1e-8))
             radiance32 = np.maximum(0.0, radiance_total).astype(np.float32)
-            output[out_y0:out_y1] += radiance32 * ratio[:, :, None]
-            own[out_y0:out_y1] += radiance32 * own_ratio[:, :, None]
-            coverage[out_y0:out_y1] += take
+            output[out_y0:out_y1, band] += radiance32 * ratio[:, :, None]
+            own[out_y0:out_y1, band] += radiance32 * own_ratio[:, :, None]
+            coverage[out_y0:out_y1, band] += take
             del mass_total, radiance_total, receiver_coc, alpha, behind, footprint
             del visibility, take, ratio, local, own_ratio, radiance32
         del fft_kernel_spectrum_cache
@@ -954,6 +966,7 @@ def scatter_highlights(
     _sparse_radiance_roi: bool = True,
     _output_support_roi: bool = True,
     _coc_interval_pruning: bool = True,
+    _compact_band_output: bool = True,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
 
@@ -1022,6 +1035,7 @@ def scatter_highlights(
             sparse_radiance_roi=_sparse_radiance_roi,
             output_support_roi=_output_support_roi,
             coc_interval_pruning=_coc_interval_pruning,
+            compact_band_output=_compact_band_output,
         )
 
     output = np.zeros_like(high)
