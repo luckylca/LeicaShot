@@ -47,3 +47,33 @@ This stage microbenchmark is not full service end-to-end proof.
 Strict Linux 2GiB memory limits and multiworker HTTP loads
 remain separate validation requirements. Local model and photo
 assets are excluded from Git.
+
+## Complete native 20MP five-model proof
+
+After optical-stage ABBA, the candidate was executed by the actual
+standalone Python low-memory CLI with M9, Depth V2 Small, SAM2 Tiny,
+ViTMatte Small, three ARNet bokeh inference passes, field optics,
+highlight softening and full PNG export. Hardware, 9 CPU threads,
+original portrait, model hashes, ARNet split edge 256, SAM arena
+setting and all photo-processing options matched merged PR #82.
+
+| Whole-process metric | Merged PR #82 | Candidate |
+|---|---:|---:|
+| Complete 5472x3648 job | 140.6811 s | 129.9214 s |
+| Highlight-softening stage | 18.2830 s | 10.0079 s |
+| Optical scattering stage | 43.8047 s | 43.7902 s |
+| Sampled whole-worker RSS | 1,306,570,752 B | 1,317,445,632 B |
+
+Full job time was approximately 7.6% shorter on this run, with
+approximately 10 MiB higher sampled peak RSS (within the normal
+run-to-run memory variation, not a demonstrated systematic memory
+increase). Compared with the much older original pre-PR #80 345.06s
+run, total latency is approximately 62.4% lower across all combined
+changes, but this is not one controlled multi-photo benchmark.
+
+The final PNG SHA256 exactly matched the merged PR #82 photo, as
+verified by reading both real output files. 5472x3648 RGB data had
+zero different pixels and a maximum 8-bit channel difference of zero.
+
+A production-default merge still requires full Python unit tests and
+cross-platform CI. Linux cgroups and multi-API-concurrency are pending.
