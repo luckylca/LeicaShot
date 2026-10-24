@@ -42,7 +42,9 @@ def make_parser() -> argparse.ArgumentParser:
         parser.add_argument("--" + key, type=Path, required=True)
     parser.add_argument("--arnet-split-dir", type=Path)
     parser.add_argument("--subject-point", action="append", default=["0.5,0.5"])
-    parser.add_argument("--matte-tile-size", type=int, choices=(512, 768, 1024), default=512)
+    parser.add_argument(
+        "--matte-tile-size", type=int, choices=(512, 768, 1024), default=512
+    )
     parser.add_argument("--threads", default="1,2,4")
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--memory-budget-mib", type=int, default=2048)
@@ -58,8 +60,10 @@ def _parse_threads(text: str) -> list[int]:
         values = [int(value.strip()) for value in text.split(",")]
     except ValueError as exc:
         raise ValueError("threads must be comma-separated positive integers") from exc
-    if not values or len(set(values)) != len(values) or any(
-        value < 1 or value > 32 for value in values
+    if (
+        not values
+        or len(set(values)) != len(values)
+        or any(value < 1 or value > 32 for value in values)
     ):
         raise ValueError("threads must be unique integers in [1, 32]")
     return values
@@ -89,7 +93,8 @@ def _rss_tree(process: psutil.Process) -> int:
     try:
         descendants = process.children(recursive=True)
         return sum(
-            proc.memory_info().rss for proc in [process, *descendants]
+            proc.memory_info().rss
+            for proc in [process, *descendants]
             if proc.is_running()
         )
     except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -105,8 +110,13 @@ def _launch(
 ) -> tuple[float, int, dict[str, Any]]:
     start = time.perf_counter()
     child = subprocess.Popen(
-        argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace", env=environment
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
     )
     tree = psutil.Process(child.pid)
     peak = 0
@@ -125,9 +135,7 @@ def _launch(
             child.communicate()
     elapsed = time.perf_counter() - start
     if child.returncode != 0:
-        raise RuntimeError(
-            f"Laika exited {child.returncode}: {stderr[-1600:]}"
-        )
+        raise RuntimeError(f"Laika exited {child.returncode}: {stderr[-1600:]}")
     return elapsed, peak, _decode_result(stdout)
 
 
@@ -157,8 +165,12 @@ def main() -> int:
     if not 0.01 <= args.sample_seconds <= 1.0:
         raise ValueError("sample interval must be between 0.01 and 1 second")
     for name in (
-        "input", "m9_model", "depth_model", "bokeh_model",
-        "sam_model_dir", "vitmatte_model",
+        "input",
+        "m9_model",
+        "depth_model",
+        "bokeh_model",
+        "sam_model_dir",
+        "vitmatte_model",
     ):
         path = getattr(args, name)
         if not path.exists():
@@ -181,22 +193,39 @@ def main() -> int:
         for count in order:
             output = args.output_dir / f"threads-{count}-trial-{repeat}.png"
             cmd = [
-                sys.executable, "-m", "laika.cli", "pipeline",
-                str(args.input), str(output),
-                "--mode", "color+bokeh", "--strategy", "low-memory",
-                "--threads", str(count),
-                "--m9-model", str(args.m9_model),
-                "--depth-model", str(args.depth_model),
-                "--bokeh-model", str(args.bokeh_model),
-                "--sam-model-dir", str(args.sam_model_dir),
-                "--vitmatte-model", str(args.vitmatte_model),
-                "--matte-tile-size", str(args.matte_tile_size),
-                "--max-pixels", str(args.max_pixels),
+                sys.executable,
+                "-m",
+                "laika.cli",
+                "pipeline",
+                str(args.input),
+                str(output),
+                "--mode",
+                "color+bokeh",
+                "--strategy",
+                "low-memory",
+                "--threads",
+                str(count),
+                "--m9-model",
+                str(args.m9_model),
+                "--depth-model",
+                str(args.depth_model),
+                "--bokeh-model",
+                str(args.bokeh_model),
+                "--sam-model-dir",
+                str(args.sam_model_dir),
+                "--vitmatte-model",
+                str(args.vitmatte_model),
+                "--matte-tile-size",
+                str(args.matte_tile_size),
+                "--max-pixels",
+                str(args.max_pixels),
             ]
             for point in args.subject_point:
                 cmd.extend(("--subject-point", point))
             elapsed, peak, result = _launch(
-                cmd, env, timeout=args.timeout_seconds,
+                cmd,
+                env,
+                timeout=args.timeout_seconds,
                 interval=args.sample_seconds,
             )
             if reference is None:
@@ -219,22 +248,23 @@ def main() -> int:
     ranking = []
     for count in threads:
         trials = [item for item in records if item["threads"] == count]
-        ranking.append({
-            "threads": count,
-            "median_wall_seconds": statistics.median(
-                trial["wall_seconds"] for trial in trials
-            ),
-            "max_observed_rss": max(
-                trial["peak_process_tree_rss"] for trial in trials
-            ),
-            "within_sampled_budget": all(
-                trial["peak_process_tree_rss"] <= budget_bytes
-                for trial in trials
-            ),
-            "max_channel_difference": max(
-                trial["max_8bit_channel_diff"] for trial in trials
-            ),
-        })
+        ranking.append(
+            {
+                "threads": count,
+                "median_wall_seconds": statistics.median(
+                    trial["wall_seconds"] for trial in trials
+                ),
+                "max_observed_rss": max(
+                    trial["peak_process_tree_rss"] for trial in trials
+                ),
+                "within_sampled_budget": all(
+                    trial["peak_process_tree_rss"] <= budget_bytes for trial in trials
+                ),
+                "max_channel_difference": max(
+                    trial["max_8bit_channel_diff"] for trial in trials
+                ),
+            }
+        )
     ranking.sort(key=lambda entry: entry["median_wall_seconds"])
     report = {
         "description": (
@@ -244,15 +274,19 @@ def main() -> int:
         "input_path": str(args.input),
         "input_sha256": _sha256(args.input),
         "model_paths": {
-            "m9": str(args.m9_model), "depth": str(args.depth_model),
+            "m9": str(args.m9_model),
+            "depth": str(args.depth_model),
             "arnet": str(args.bokeh_model),
             "sam": str(args.sam_model_dir),
             "vitmatte": str(args.vitmatte_model),
         },
         "configuration": {
-            "threads": threads, "repeats": args.repeat,
+            "threads": threads,
+            "repeats": args.repeat,
             "sam_no_arena": True,
-            "arnet_split_dir": str(args.arnet_split_dir) if args.arnet_split_dir else None,
+            "arnet_split_dir": str(args.arnet_split_dir)
+            if args.arnet_split_dir
+            else None,
             "memory_budget_mib": args.memory_budget_mib,
         },
         "ranked_by_median_wall_time": ranking,
