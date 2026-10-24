@@ -936,10 +936,10 @@ class LaikaProcessingEngine:
             )
             self._sam_engine, sam_owned = sam_engine, False
         else:
-            sam_engine = self._sam_factory(
-                self.sam_model_dir,
-                intra_op_num_threads=self.threads,
-            )
+            sam_options: dict[str, Any] = {"intra_op_num_threads": self.threads}
+            if os.environ.get("LAIKA_SAM_DISABLE_CPU_ARENA") == "1":
+                sam_options["disable_cpu_mem_arena"] = True
+            sam_engine = self._sam_factory(self.sam_model_dir, **sam_options)
             sam_owned = True
         stages["subject.sam_model_load"] = (
             0.0 if sam_reused else time.perf_counter() - started

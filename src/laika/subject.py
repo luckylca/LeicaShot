@@ -15,6 +15,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from numbers import Integral
 from pathlib import Path
 from typing import Any
@@ -525,7 +526,12 @@ def _image_fingerprint(image_tensor: Any) -> str:
     return digest.hexdigest()
 
 
-def _onnx_session(path: str | Path, intra_op_num_threads: int) -> Any:
+def _onnx_session(
+    path: str | Path,
+    intra_op_num_threads: int,
+    *,
+    disable_cpu_mem_arena: bool = False,
+) -> Any:
     try:
         import onnxruntime as ort
     except ImportError as exc:  # pragma: no cover - depends on optional runtime
@@ -537,6 +543,9 @@ def _onnx_session(path: str | Path, intra_op_num_threads: int) -> Any:
     options.intra_op_num_threads = intra_op_num_threads
     options.inter_op_num_threads = 1
     options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # Disable ONNX CPU allocator pooling only in the explicitly requested
+    # memory-limited SAM path. Preserve all graph optimizations and accuracy.
+    options.enable_cpu_mem_arena = not disable_cpu_mem_arena
     return ort.InferenceSession(
         str(path), sess_options=options, providers=["CPUExecutionProvider"]
     )
@@ -561,10 +570,13 @@ class Sam2TinyOnnx:
         cache_max_bytes: int = 96 * 1024 * 1024,
         intra_op_num_threads: int = 1,
         session_factory: Callable[[str | Path, int], Any] | None = None,
+        disable_cpu_mem_arena: bool = False,
     ) -> None:
         if intra_op_num_threads < 1:
             raise ValueError("intra_op_num_threads must be positive")
-        factory = session_factory or _onnx_session
+        factory = session_factory or partial(
+            _onnx_session, disable_cpu_mem_arena=disable_cpu_mem_arena
+        )
         self._encoder = factory(image_encoder_path, intra_op_num_threads)
         self._decoder = factory(image_decoder_path, intra_op_num_threads)
         self._cache = ImageEmbeddingCache(cache_max_bytes)
@@ -579,6 +591,7 @@ class Sam2TinyOnnx:
         cache_max_bytes: int = 96 * 1024 * 1024,
         intra_op_num_threads: int = 1,
         session_factory: Callable[[str | Path, int], Any] | None = None,
+        disable_cpu_mem_arena: bool = False,
     ) -> Sam2TinyOnnx:
         """Load the local split graphs only when their exporter record matches."""
         directory = Path(model_dir)
@@ -618,6 +631,7 @@ class Sam2TinyOnnx:
             cache_max_bytes=cache_max_bytes,
             intra_op_num_threads=intra_op_num_threads,
             session_factory=session_factory,
+            disable_cpu_mem_arena=disable_cpu_mem_arena,
         )
         instance.image_encoder_sha256 = hashes[0][1]
         instance.image_decoder_sha256 = hashes[1][1]

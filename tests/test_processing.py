@@ -596,3 +596,44 @@ def test_split_arnet_env_reaches_unified_low_memory_engine(
     _engine, owned = balanced._acquire_bokeh(ProcessingOptions(strategy="balanced"))
     assert not owned
     assert "split_graph_dir" not in calls[-1]
+
+
+@pytest.mark.parametrize(
+    ("strategy", "flag", "expected"),
+    [
+        ("low-memory", "1", True),
+        ("low-memory", "0", False),
+        ("balanced", "1", False),
+    ],
+)
+def test_sam_cpu_arena_opt_in_only_low_memory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    strategy: str,
+    flag: str,
+    expected: bool,
+) -> None:
+    source = tmp_path / "source.png"
+    output = tmp_path / "processed.png"
+    _source(source)
+    monkeypatch.setenv("LAIKA_SAM_DISABLE_CPU_ARENA", flag)
+    engine = _engine(mode="bokeh", strategy=strategy)
+    engine.sam_model_dir = tmp_path / "sam-models"
+    engine.vitmatte_model_path = tmp_path / "matte.onnx"
+    called: list[dict[str, Any]] = []
+
+    def factory(_model_dir: Path, **kwargs: Any) -> FakeSamEngine:
+        called.append(kwargs)
+        return FakeSamEngine()
+
+    engine._sam_factory = factory
+    options = ProcessingOptions(
+        mode="bokeh",
+        strategy=strategy,
+        subject_points=((0.5, 0.5),),
+        matte_tile_size=512,
+    )
+    with engine:
+        engine.process_file(source, output, options=options)
+    assert output.exists()
+    assert bool(called[0].get("disable_cpu_mem_arena", False)) == expected
