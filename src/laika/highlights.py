@@ -479,6 +479,52 @@ def _source_levels(
     return sorted(levels, reverse=True)
 
 
+def _sparse_mass_filter(
+    weight: Any,
+    kernel: Any,
+    out_rows: int,
+    out_cols: int,
+) -> tuple[Any, int, int] | None:
+    """Convolve only the support of a sparse CoC layer.
+
+    The caller's source already includes a halo of one kernel radius. The
+    output footprint of every nonzero source pixel is bounded by that same
+    radius; outside it the convolution is exactly zero. Explicit zero padding
+    preserves convolution contributions without introducing tile-edge
+    reflection. Return a cropped *interior* result and its y/x offsets.
+    """
+    half = kernel.shape[0] // 2
+    active_y = np.flatnonzero(np.any(weight != 0.0, axis=1))
+    active_x = np.flatnonzero(np.any(weight != 0.0, axis=0))
+    if not len(active_y) or not len(active_x):
+        return None
+    by0, by1 = int(active_y[0]), int(active_y[-1]) + 1
+    bx0, bx1 = int(active_x[0]), int(active_x[-1]) + 1
+    padded_height = by1 - by0 + 2 * half
+    padded_width = bx1 - bx0 + 2 * half
+    if padded_height * padded_width >= weight.size * 0.55:
+        return None
+    iy0 = max(half, by0 - half)
+    iy1 = min(half + out_rows, by1 + half)
+    ix0 = max(half, bx0 - half)
+    ix1 = min(half + out_cols, bx1 + half)
+    if iy1 <= iy0 or ix1 <= ix0:
+        return None
+    padded = np.zeros((padded_height, padded_width), dtype=np.float64)
+    padded[half : half + by1 - by0, half : half + bx1 - bx0] = weight[by0:by1, bx0:bx1]
+    filtered = cv2.filter2D(
+        padded,
+        ddepth=cv2.CV_64F,
+        kernel=kernel,
+        borderType=cv2.BORDER_CONSTANT,
+    )
+    tile = filtered[
+        iy0 - by0 + half : iy1 - by0 + half,
+        ix0 - bx0 + half : ix1 - bx0 + half,
+    ]
+    return tile, iy0 - half, ix0 - half
+
+
 def _scatter_field_optical(
     high: Any,
     depth: Any,
@@ -493,6 +539,7 @@ def _scatter_field_optical(
     mass_filter_float32: bool = False,
     mass_filter_fft32_outer: bool = False,
     float32_radiance_workspace: bool = True,
+    sparse_mass_roi: bool = False,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -575,38 +622,65 @@ def _scatter_field_optical(
                             layer_weight[:, :, None],
                             out=weighted,
                         )
-                use_fft32 = mass_filter_fft32_outer and layer_weight.shape[1] <= 1700
-                if use_fft32:
-                    node_mass = _fft32_mass_filter_interior(
-                        layer_weight,
-                        kernel,
-                        y1 - y0,
-                        x1 - x0,
-                        fft_kernel_spectrum_cache,
+                rows = slice(y0 - out_y0, y1 - out_y0)
+                sparse_result = (
+                    _sparse_mass_filter(layer_weight, kernel, y1 - y0, x1 - x0)
+                    if sparse_mass_roi
+                    and not mass_filter_float32
+                    and not mass_filter_fft32_outer
+                    else None
+                )
+                if sparse_result is not None:
+                    node_mass, mass_dy, mass_dx = sparse_result
+                    node_height, node_width = node_mass.shape
+                    node_weight = (
+                        wy[y0 + mass_dy : y0 + mass_dy + node_height].astype(
+                            np.float64
+                        )[:, None]
+                        * wx[x0 + mass_dx : x0 + mass_dx + node_width].astype(
+                            np.float64
+                        )[None, :]
                     )
+                    np.multiply(node_mass, node_weight, out=node_mass)
+                    mass_total[
+                        y0 - out_y0 + mass_dy : y0 - out_y0 + mass_dy + node_height,
+                        x0 + mass_dx : x0 + mass_dx + node_width,
+                    ] += node_mass
                     mass = None
                 else:
-                    mass = cv2.filter2D(
-                        layer_weight
-                        if mass_filter_float32
-                        else layer_weight.astype(np.float64),
-                        ddepth=cv2.CV_32F if mass_filter_float32 else cv2.CV_64F,
-                        kernel=mass_kernel,
-                        borderType=cv2.BORDER_REFLECT_101,
+                    use_fft32 = (
+                        mass_filter_fft32_outer and layer_weight.shape[1] <= 1700
                     )
-                    node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]
-                node_weight = (
-                    wy[y0:y1].astype(np.float64)[:, None]
-                    * wx[x0:x1].astype(np.float64)[None, :]
-                )
-                row_offset = y0 - out_y0
-                rows = slice(row_offset, row_offset + y1 - y0)
-                if node_mass.dtype == np.float64:
-                    np.multiply(node_mass, node_weight, out=node_mass)
-                    mass_total[rows, x0:x1] += node_mass
-                else:
-                    # Keep experimental FP32/FFT routes' existing promotion.
-                    mass_total[rows, x0:x1] += node_mass * node_weight
+                    if use_fft32:
+                        node_mass = _fft32_mass_filter_interior(
+                            layer_weight,
+                            kernel,
+                            y1 - y0,
+                            x1 - x0,
+                            fft_kernel_spectrum_cache,
+                        )
+                        mass = None
+                    else:
+                        mass = cv2.filter2D(
+                            layer_weight
+                            if mass_filter_float32
+                            else layer_weight.astype(np.float64),
+                            ddepth=cv2.CV_32F if mass_filter_float32 else cv2.CV_64F,
+                            kernel=mass_kernel,
+                            borderType=cv2.BORDER_REFLECT_101,
+                        )
+                        node_mass = mass[half : half + y1 - y0, half : half + x1 - x0]
+                    node_weight = (
+                        wy[y0:y1].astype(np.float64)[:, None]
+                        * wx[x0:x1].astype(np.float64)[None, :]
+                    )
+                    row_offset = y0 - out_y0
+                    rows = slice(row_offset, row_offset + y1 - y0)
+                    if node_mass.dtype == np.float64:
+                        np.multiply(node_mass, node_weight, out=node_mass)
+                        mass_total[rows, x0:x1] += node_mass
+                    else:
+                        mass_total[rows, x0:x1] += node_mass * node_weight
                 # Keep the mass filter for occlusion; only empty radiance is skipped.
                 if weighted is not None and np.any(weighted):
                     radiance = cv2.filter2D(
@@ -620,9 +694,15 @@ def _scatter_field_optical(
                     node_radiance = radiance[
                         half : half + y1 - y0, half : half + x1 - x0
                     ]
+                    radiance_node_weight = (
+                        wy[y0:y1].astype(np.float64)[:, None]
+                        * wx[x0:x1].astype(np.float64)[None, :]
+                        if sparse_result is not None
+                        else node_weight
+                    )
                     np.multiply(
                         node_radiance,
-                        node_weight[:, :, None],
+                        radiance_node_weight[:, :, None],
                         out=node_radiance,
                     )
                     radiance_total[rows, x0:x1] += node_radiance
@@ -688,8 +768,12 @@ def scatter_highlights(
     cancel_check: Callable[[], None] | None = None,
     progress_callback: Callable[[float], None] | None = None,
     _float32_radiance_workspace: bool = True,
+    _sparse_mass_roi: bool = True,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
+
+    Sparse CoC layer support is filtered only where it can affect pixels;
+    the full kernel is retained, with a dense-path fallback.
 
     Integer CoC layers use a tent partition of unity. Layers are accumulated
     near-to-far using the same saturated coverage and relative-depth
@@ -744,6 +828,7 @@ def scatter_highlights(
             cancel_check,
             progress_callback,
             float32_radiance_workspace=_float32_radiance_workspace,
+            sparse_mass_roi=_sparse_mass_roi,
         )
 
     output = np.zeros_like(high)
