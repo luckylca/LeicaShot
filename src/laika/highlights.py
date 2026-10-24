@@ -525,6 +525,47 @@ def _sparse_mass_filter(
     return tile, iy0 - half, ix0 - half
 
 
+def _sparse_radiance_filter(
+    radiance: Any,
+    kernel: Any,
+    out_rows: int,
+    out_cols: int,
+) -> tuple[Any, int, int] | None:
+    """Clip a 3-channel convolution to the exact nonzero input support."""
+    half = kernel.shape[0] // 2
+    active = np.any(radiance != 0.0, axis=2)
+    ay = np.flatnonzero(np.any(active, axis=1))
+    ax = np.flatnonzero(np.any(active, axis=0))
+    if not len(ay) or not len(ax):
+        return None
+    y0, y1 = int(ay[0]), int(ay[-1]) + 1
+    x0, x1 = int(ax[0]), int(ax[-1]) + 1
+    padded_h = y1 - y0 + half * 2
+    padded_w = x1 - x0 + half * 2
+    if padded_h * padded_w >= radiance.shape[0] * radiance.shape[1] * 0.55:
+        return None
+    oy0, oy1 = max(half, y0 - half), min(half + out_rows, y1 + half)
+    ox0, ox1 = max(half, x0 - half), min(half + out_cols, x1 + half)
+    if oy0 >= oy1 or ox0 >= ox1:
+        return None
+    padded = np.zeros((padded_h, padded_w, 3), dtype=radiance.dtype)
+    padded[half : half + y1 - y0, half : half + x1 - x0] = radiance[y0:y1, x0:x1]
+    convolved = cv2.filter2D(
+        padded,
+        ddepth=cv2.CV_32F if padded.dtype == np.float32 else cv2.CV_64F,
+        kernel=kernel,
+        borderType=cv2.BORDER_CONSTANT,
+    )
+    return (
+        convolved[
+            oy0 - y0 + half : oy1 - y0 + half,
+            ox0 - x0 + half : ox1 - x0 + half,
+        ],
+        oy0 - half,
+        ox0 - half,
+    )
+
+
 def _scatter_field_optical(
     high: Any,
     depth: Any,
@@ -540,6 +581,7 @@ def _scatter_field_optical(
     mass_filter_fft32_outer: bool = False,
     float32_radiance_workspace: bool = True,
     sparse_mass_roi: bool = False,
+    sparse_radiance_roi: bool = False,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -683,29 +725,51 @@ def _scatter_field_optical(
                         mass_total[rows, x0:x1] += node_mass * node_weight
                 # Keep the mass filter for occlusion; only empty radiance is skipped.
                 if weighted is not None and np.any(weighted):
-                    radiance = cv2.filter2D(
-                        weighted,
-                        ddepth=(
-                            cv2.CV_32F if float32_radiance_workspace else cv2.CV_64F
-                        ),
-                        kernel=kernel,
-                        borderType=cv2.BORDER_REFLECT_101,
+                    compact_radiance = (
+                        _sparse_radiance_filter(weighted, kernel, y1 - y0, x1 - x0)
+                        if sparse_radiance_roi
+                        else None
                     )
-                    node_radiance = radiance[
-                        half : half + y1 - y0, half : half + x1 - x0
-                    ]
-                    radiance_node_weight = (
-                        wy[y0:y1].astype(np.float64)[:, None]
-                        * wx[x0:x1].astype(np.float64)[None, :]
-                        if sparse_result is not None
-                        else node_weight
-                    )
-                    np.multiply(
-                        node_radiance,
-                        radiance_node_weight[:, :, None],
-                        out=node_radiance,
-                    )
-                    radiance_total[rows, x0:x1] += node_radiance
+                    if compact_radiance is not None:
+                        node_radiance, dy, dx = compact_radiance
+                        rh, rw = node_radiance.shape[:2]
+                        radiance_node_weight = (
+                            wy[y0 + dy : y0 + dy + rh].astype(np.float64)[:, None]
+                            * wx[x0 + dx : x0 + dx + rw].astype(np.float64)[None, :]
+                        )
+                        np.multiply(
+                            node_radiance,
+                            radiance_node_weight[:, :, None],
+                            out=node_radiance,
+                        )
+                        radiance_total[
+                            y0 - out_y0 + dy : y0 - out_y0 + dy + rh,
+                            x0 + dx : x0 + dx + rw,
+                        ] += node_radiance
+                    else:
+                        radiance = cv2.filter2D(
+                            weighted,
+                            ddepth=(
+                                cv2.CV_32F if float32_radiance_workspace else cv2.CV_64F
+                            ),
+                            kernel=kernel,
+                            borderType=cv2.BORDER_REFLECT_101,
+                        )
+                        node_radiance = radiance[
+                            half : half + y1 - y0, half : half + x1 - x0
+                        ]
+                        radiance_node_weight = (
+                            wy[y0:y1].astype(np.float64)[:, None]
+                            * wx[x0:x1].astype(np.float64)[None, :]
+                            if sparse_result is not None
+                            else node_weight
+                        )
+                        np.multiply(
+                            node_radiance,
+                            radiance_node_weight[:, :, None],
+                            out=node_radiance,
+                        )
+                        radiance_total[rows, x0:x1] += node_radiance
                 del (
                     selection,
                     source_high,
@@ -769,6 +833,7 @@ def scatter_highlights(
     progress_callback: Callable[[float], None] | None = None,
     _float32_radiance_workspace: bool = True,
     _sparse_mass_roi: bool = True,
+    _sparse_radiance_roi: bool = True,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
 
@@ -829,6 +894,7 @@ def scatter_highlights(
             progress_callback,
             float32_radiance_workspace=_float32_radiance_workspace,
             sparse_mass_roi=_sparse_mass_roi,
+            sparse_radiance_roi=_sparse_radiance_roi,
         )
 
     output = np.zeros_like(high)
