@@ -872,12 +872,17 @@ class LaikaProcessingEngine:
                     intra_op_num_threads=self.threads,
                 )
             return self._bokeh_engine, False
+        low_memory_options: dict[str, Any] = {
+            "strategy": "low-memory",
+            "intra_op_num_threads": self.threads,
+        }
+        # These split graphs must be explicitly opted in. The same
+        # verified assets are used by the standalone CLI and HTTP/SDK.
+        split_graph_dir = os.environ.get("LAIKA_ARNET_SPLIT_DIR")
+        if split_graph_dir:
+            low_memory_options["split_graph_dir"] = split_graph_dir
         return (
-            self._bokeh_factory(
-                self.bokeh_model_path,
-                strategy="low-memory",
-                intra_op_num_threads=self.threads,
-            ),
+            self._bokeh_factory(self.bokeh_model_path, **low_memory_options),
             True,
         )
 

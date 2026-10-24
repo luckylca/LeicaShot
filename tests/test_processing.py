@@ -557,3 +557,42 @@ def test_processing_options_reject_implicit_upscale_and_invalid_controls() -> No
         ProcessingOptions(focus_x=1.1)
     with pytest.raises(ValueError, match="row chunk"):
         ProcessingOptions(bokeh_row_chunk_height=0)
+
+
+def test_split_arnet_env_reaches_unified_low_memory_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_bokeh_factory(_path: Path, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return SimpleNamespace()
+
+    low_engine = LaikaProcessingEngine(
+        bokeh_model_path="fake-model.onnx",
+        strategy="low-memory",
+        threads=1,
+        bokeh_factory=fake_bokeh_factory,
+    )
+    options = ProcessingOptions(strategy="low-memory")
+    monkeypatch.setenv("LAIKA_ARNET_SPLIT_DIR", "C:/checked-models/arnet-split")
+    _engine, owned = low_engine._acquire_bokeh(options)
+    assert owned
+    assert calls[-1]["split_graph_dir"] == "C:/checked-models/arnet-split"
+    assert calls[-1]["strategy"] == "low-memory"
+
+    monkeypatch.delenv("LAIKA_ARNET_SPLIT_DIR")
+    _engine, owned = low_engine._acquire_bokeh(options)
+    assert owned
+    assert "split_graph_dir" not in calls[-1]
+
+    balanced = LaikaProcessingEngine(
+        bokeh_model_path="fake-model.onnx",
+        strategy="balanced",
+        threads=2,
+        bokeh_factory=fake_bokeh_factory,
+    )
+    monkeypatch.setenv("LAIKA_ARNET_SPLIT_DIR", "C:/checked-models/arnet-split")
+    _engine, owned = balanced._acquire_bokeh(ProcessingOptions(strategy="balanced"))
+    assert not owned
+    assert "split_graph_dir" not in calls[-1]

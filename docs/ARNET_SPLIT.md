@@ -1,4 +1,8 @@
-﻿# Optional ARNet global-resize / tiled-core inference
+# Optional ARNet global-resize / tiled-core inference
+
+## Important 2026-10-25 validation correction
+
+**Previous full-pipeline timings/identity were not a verified split path.** The unified Python SDK and Web/API processing engine originally did not forward LAIKA_ARNET_SPLIT_DIR. PR #76 corrects that omission. The explicitly traced split-path 2048x1365 five-model A/B reduces mean sampled process RSS by 22.9%, but takes 3.6% longer on mean in two execution-order pairs; final PNG has max 1 8-bit channel difference (3.58% changed pixels). See benchmarks/windows-arnet-split-full-pipeline-2026-10-25.md. The previous 58.379s full-task timing and byte-identical PNG were obtained when split mode was *not activated*, and are invalid as split-path evidence.
 
 ## Purpose
 
