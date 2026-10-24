@@ -836,3 +836,39 @@ def test_coc_pruning_prescan_remains_cancellable(
             cancel_check=cancelled,
             _coc_interval_pruning=True,
         )
+
+
+@pytest.mark.parametrize("variant", ["sparse", "two_islands", "dense", "edges"])
+@pytest.mark.parametrize("chunk_height", [1, 9, 32])
+def test_compact_optical_band_exact_vs_full_width(
+    variant: str, chunk_height: int
+) -> None:
+    h, w = 27, 123
+    rng = np.random.default_rng(2760)
+    highlight = np.zeros((h, w, 3), dtype=np.float32)
+    if variant == "sparse":
+        highlight[7, 6] = (0.8, 0.6, 0.2)
+    elif variant == "two_islands":
+        highlight[8, 6] = (0.8, 0.6, 0.2)
+        highlight[22, 105] = (0.1, 0.9, 0.4)
+    elif variant == "dense":
+        highlight = rng.random((h, w, 3), dtype=np.float32) / 4
+    else:
+        highlight[0, 0] = (0.7, 0.2, 0.3)
+        highlight[-1, -1] = (0.5, 0.9, 0.4)
+    coc = np.zeros((h, w), dtype=np.float32)
+    coc[:, :29] = -2
+    coc[:, 60:] = 3
+    coc[9:15] = rng.uniform(-2.6, 2.6, (6, w)).astype(np.float32)
+    kwargs = {
+        "field_optics": True,
+        "radius_scale": 2.0,
+        "row_chunk_height": chunk_height,
+    }
+    original = scatter_highlights(
+        highlight, coc, 2.8, _compact_band_output=False, **kwargs
+    )
+    compact = scatter_highlights(
+        highlight, coc, 2.8, _compact_band_output=True, **kwargs
+    )
+    np.testing.assert_array_equal(compact, original)
