@@ -41,7 +41,7 @@ def make_parser() -> argparse.ArgumentParser:
     ):
         parser.add_argument("--" + key, type=Path, required=True)
     parser.add_argument("--arnet-split-dir", type=Path)
-    parser.add_argument("--subject-point", action="append", default=["0.5,0.5"])
+    parser.add_argument("--subject-point", action="append", default=[])
     parser.add_argument(
         "--matte-tile-size", type=int, choices=(512, 768, 1024), default=512
     )
@@ -220,7 +220,7 @@ def main() -> int:
                 "--max-pixels",
                 str(args.max_pixels),
             ]
-            for point in args.subject_point:
+            for point in args.subject_point or ["0.5,0.5"]:
                 cmd.extend(("--subject-point", point))
             elapsed, peak, result = _launch(
                 cmd,
