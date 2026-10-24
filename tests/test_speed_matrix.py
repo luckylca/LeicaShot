@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -57,7 +58,7 @@ def test_speed_matrix_measures_subprocess_without_model_weights() -> None:
     )
     elapsed, rss, result = _launch(
         [sys.executable, "-c", code],
-        {},
+        os.environ.copy(),
         timeout=20,
         interval=0.01,
     )
