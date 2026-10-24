@@ -672,7 +672,9 @@ def _scatter_field_optical(
                 kernels = _field_pupil_kernels(pupil_shapes, radius, aperture)
             if radius_counts[radius] > 1 and pupil_cache_budget_bytes:
                 unique_kernels = {id(kernel): kernel for kernel in kernels}
-                required_bytes = sum(kernel.nbytes for kernel in unique_kernels.values())
+                required_bytes = sum(
+                    kernel.nbytes for kernel in unique_kernels.values()
+                )
                 if pupil_cache_bytes + required_bytes <= pupil_cache_budget_bytes:
                     pupil_cache[radius] = kernels
                     pupil_cache_bytes += required_bytes
