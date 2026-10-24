@@ -20,3 +20,5 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Measure uncached vs bounded-cache optical scatter
         run: python scripts/benchmark_optical_pupil_cache.py --repeat 2
+      - name: Measure larger synthetic field-optical scatter
+        run: python scripts/benchmark_optical_pupil_cache.py --height 256 --width 384 --repeat 2
