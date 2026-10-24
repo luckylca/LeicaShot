@@ -805,3 +805,34 @@ def test_coc_interval_pruning_does_not_change_full_support_legacy_mode() -> None
     a = scatter_highlights(high, coc, 2.8, **kwargs)
     b = scatter_highlights(high, coc, 2.8, _coc_interval_pruning=True, **kwargs)
     np.testing.assert_array_equal(b, a)
+
+
+def test_coc_pruning_prescan_remains_cancellable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    high = np.zeros((22, 25, 3), dtype=np.float32)
+    high[7, 8] = (0.3, 0.6, 0.9)
+    coc = np.zeros((22, 25), dtype=np.float32)
+    post_support = False
+    original = highlights._highlight_output_spans
+
+    def prepared(*args, **kwargs):
+        nonlocal post_support
+        result = original(*args, **kwargs)
+        post_support = True
+        return result
+
+    def cancelled() -> None:
+        if post_support:
+            raise RuntimeError("cancelled during CoC prescan")
+
+    monkeypatch.setattr(highlights, "_highlight_output_spans", prepared)
+    with pytest.raises(RuntimeError, match="during CoC prescan"):
+        scatter_highlights(
+            high,
+            coc,
+            2.8,
+            field_optics=True,
+            cancel_check=cancelled,
+            _coc_interval_pruning=True,
+        )

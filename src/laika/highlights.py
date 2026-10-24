@@ -663,6 +663,7 @@ def _scatter_field_optical(
         maximal_halo = max(abs(level) + 1 for level in levels)
         active_node_intervals = []
         for band_index, out_y0 in enumerate(range(0, height, row_chunk_height)):
+            _check(cancel_check)
             out_y1 = min(height, out_y0 + row_chunk_height)
             relevant = []
             for node_index, node in enumerate(nodes):
