@@ -252,6 +252,7 @@ def main() -> int:
     )
     with (
         progress_context as progress_stream,
+        ProcessTreePeak(args.rss_sample_interval_seconds) as peak,
         LaikaProcessingEngine(
             m9_model_path=args.m9_model,
             depth_model_path=args.depth_model,
@@ -261,7 +262,6 @@ def main() -> int:
             strategy=args.strategy,
             threads=args.threads,
         ) as engine,
-        ProcessTreePeak(args.rss_sample_interval_seconds) as peak,
     ):
 
         def on_progress(event: Any) -> None:
