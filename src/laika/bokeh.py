@@ -140,6 +140,8 @@ class BokehMeARNet:
         full_inference_pixel_limit: int = BOKEH_FULL_INFERENCE_PIXEL_LIMIT,
         expected_sha256: str | None = None,
         session_factory: Any | None = None,
+        split_graph_dir: str | os.PathLike[str] | None = None,
+        split_graph_edge: int = 256,
     ) -> None:
         if strategy not in BOKEH_STRATEGIES:
             raise ValueError(f"strategy must be one of {', '.join(BOKEH_STRATEGIES)}")
@@ -160,6 +162,11 @@ class BokehMeARNet:
         if full_inference_pixel_limit < 1:
             raise ValueError("full_inference_pixel_limit must be positive")
 
+        if split_graph_edge < 64 or split_graph_edge % 2:
+            raise ValueError("split_graph_edge must be even and at least 64")
+        self._split_graph_edge = split_graph_edge
+        self._split_sessions: tuple[Any, Any, Any] | None = None
+        self._split_graph_paths: tuple[Path, Path, Path] | None = None
         self.model_path = Path(model_path)
         self.strategy = strategy
         self.intra_op_num_threads = intra_op_num_threads
@@ -233,6 +240,21 @@ class BokehMeARNet:
         if session.get_providers() != ["CPUExecutionProvider"]:
             raise BokehInferenceError("BokehMe must run on CPUExecutionProvider")
 
+        if split_graph_dir is not None:
+            if strategy != "low-memory":
+                raise ValueError("split graphs require the low-memory strategy")
+            from .arnet_split import verify_split_graph_dir
+
+            try:
+                self._split_graph_paths = verify_split_graph_dir(
+                    Path(split_graph_dir), actual_sha256
+                )
+            except (OSError, ValueError) as exc:
+                raise BokehInferenceError(
+                    f"invalid ARNet split graph files: {exc}"
+                ) from exc
+        self._split_session_options = options
+        self._split_session_factory = factory
         self.model_sha256 = actual_sha256
         self.runtime_version = ort.__version__
         self.provider = "CPUExecutionProvider"
@@ -260,6 +282,8 @@ class BokehMeARNet:
         """Run ARNet once and return its owned NCHW output buffer."""
         image, defocus_map = self._validated_inputs(rgb, defocus)
         height, width = image.shape[:2]
+        if self.will_split(width, height):
+            return self._infer_split(image, defocus_map, tile_callback=tile_callback)
         if self.will_tile(width, height):
             return self._infer_tiled(image, defocus_map, tile_callback=tile_callback)
         return self._infer_one(image, defocus_map)
@@ -271,6 +295,112 @@ class BokehMeARNet:
             and width * height > self.full_inference_pixel_limit
             and height % 2 == 0
             and width % 2 == 0
+        )
+
+    def will_split(self, width: int, height: int) -> bool:
+        """Use global-resize / tiled-convolution graphs for large odd frames."""
+        return (
+            self.strategy == "low-memory"
+            and self._split_graph_paths is not None
+            and width * height > self.full_inference_pixel_limit
+            and (height % 2 != 0 or width % 2 != 0)
+        )
+
+    def _infer_split(
+        self,
+        image: Any,
+        defocus_map: Any,
+        *,
+        tile_callback: Callable[[BokehTileProgress], None] | None = None,
+    ) -> BokehPrediction:
+        """Preserve global ONNX resize coordinates; tile only local conv layers.
+
+        The eight 3x3 spatial convolutions have half-resolution receptive
+        radius eight; eight source pixels of overlap are sufficient.
+        The extracted prefix/suffix retain the original global align-corners
+        resizes, which a naively tiled full ARNet model cannot reproduce.
+        """
+        import numpy as np
+
+        if self._split_graph_paths is None:
+            raise BokehInferenceError("ARNet split graphs have not been configured")
+        if self._split_sessions is None:
+            self._split_sessions = tuple(
+                self._split_session_factory(
+                    str(path),
+                    sess_options=self._split_session_options,
+                    providers=["CPUExecutionProvider"],
+                )
+                for path in self._split_graph_paths
+            )
+        prefix, core, suffix = self._split_sessions
+        height, width = image.shape[:2]
+        started = time.perf_counter()
+        tensor = np.empty((1, 3, height, width), dtype=np.float32)
+        for channel in range(3):
+            tensor[0, channel] = image[:, :, channel]
+            if image.dtype == np.uint8:
+                np.divide(tensor[0, channel], np.float32(255.0), out=tensor[0, channel])
+        input_defocus = defocus_map.reshape((1, 1, height, width))
+        preprocessing = time.perf_counter() - started
+        run_start = time.perf_counter()
+        feature = prefix.run(
+            ["/Concat_5_output_0"], {"image": tensor, "defocus": input_defocus}
+        )[0]
+        _, _, feature_height, feature_width = feature.shape
+        upsampled = np.empty(
+            (1, 4, feature_height * 2, feature_width * 2), dtype=np.float16
+        )
+        edge = self._split_graph_edge
+        halo = 8
+        tile_count = ceil(feature_height / edge) * ceil(feature_width / edge)
+        index = 0
+        for y0 in range(0, feature_height, edge):
+            y1 = min(feature_height, y0 + edge)
+            ya, yb = max(0, y0 - halo), min(feature_height, y1 + halo)
+            for x0 in range(0, feature_width, edge):
+                x1 = min(feature_width, x0 + edge)
+                xa, xb = max(0, x0 - halo), min(feature_width, x1 + halo)
+                index += 1
+                if tile_callback is not None:
+                    event = dict(
+                        index=index,
+                        count=tile_count,
+                        frame_width=width,
+                        frame_height=height,
+                        x=2 * x0,
+                        y=2 * y0,
+                        width=min(width - 2 * x0, 2 * (x1 - x0)),
+                        height=min(height - 2 * y0, 2 * (y1 - y0)),
+                    )
+                    tile_callback(BokehTileProgress(phase="started", **event))
+                tile = np.ascontiguousarray(feature[:, :, ya:yb, xa:xb])
+                part = core.run(
+                    ["/upsample/DepthToSpace_output_0"],
+                    {"/Concat_5_output_0": tile},
+                )[0]
+                upsampled[:, :, 2 * y0 : 2 * y1, 2 * x0 : 2 * x1] = part[
+                    :, :, 2 * (y0 - ya) : 2 * (y1 - ya), 2 * (x0 - xa) : 2 * (x1 - xa)
+                ]
+                del tile, part
+                if tile_callback is not None:
+                    tile_callback(BokehTileProgress(phase="complete", **event))
+        del feature
+        output = suffix.run(
+            ["output"],
+            {"image": tensor, "/upsample/DepthToSpace_output_0": upsampled},
+        )[0]
+        del upsampled, tensor
+        np.clip(output, np.float32(0.0), np.float32(1.0), out=output)
+        seconds = time.perf_counter() - run_start
+        return BokehPrediction(
+            rgb_nchw=output,
+            width=width,
+            height=height,
+            preprocess_seconds=preprocessing,
+            inference_seconds=seconds,
+            tiled=True,
+            tile_count=tile_count,
         )
 
     def infer_into_rgb(
@@ -302,6 +432,21 @@ class BokehMeARNet:
                 "output must be a writable contiguous H×W×3 float32 RGB array"
             )
 
+        if self.will_split(width, height):
+            prediction = self._infer_split(
+                image, defocus_map, tile_callback=tile_callback
+            )
+            for channel in range(3):
+                np.copyto(destination[:, :, channel], prediction.rgb_nchw[0, channel])
+            return BokehPrediction(
+                rgb_nchw=None,
+                width=width,
+                height=height,
+                preprocess_seconds=prediction.preprocess_seconds,
+                inference_seconds=prediction.inference_seconds,
+                tiled=True,
+                tile_count=prediction.tile_count,
+            )
         if self.will_tile(width, height):
             return self._infer_tiled_into_rgb(
                 image,
@@ -578,6 +723,7 @@ class BokehMeARNet:
     def close(self) -> None:
         """Release the native ONNX Runtime session."""
         self._session = None
+        self._split_sessions = None
 
     def __enter__(self) -> BokehMeARNet:
         if self._session is None:
@@ -992,18 +1138,23 @@ def render_bokeh(
         np.clip(defocus, -1.0, 1.0, out=defocus)
         infer_into_rgb = getattr(model, "infer_into_rgb", None)
         will_tile = getattr(model, "will_tile", None)
+        will_split = getattr(model, "will_split", None)
         direct_tiled_output = (
             (pass_width, pass_height) == (width, height)
             and callable(infer_into_rgb)
-            and callable(will_tile)
-            and will_tile(width, height)
+            and (
+                (callable(will_tile) and will_tile(width, height))
+                or (callable(will_split) and will_split(width, height))
+            )
         )
         stream_blend = (
             getattr(model, "strategy", None) == "low-memory"
             and composite is not None
             and not direct_tiled_output
         )
-        supports_tiling = callable(will_tile) and will_tile(pass_width, pass_height)
+        supports_tiling = (
+            callable(will_tile) and will_tile(pass_width, pass_height)
+        ) or (callable(will_split) and will_split(pass_width, pass_height))
         model_tile_callback = None
         if supports_tiling and (
             tile_progress_callback is not None or cancel_check is not None

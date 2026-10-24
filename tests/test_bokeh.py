@@ -724,3 +724,65 @@ def test_bokeh_adapter_rejects_invalid_inputs(
     ) as engine:
         with pytest.raises(ValueError, match=message):
             engine.infer(image, defocus)
+
+
+def test_arnet_split_graph_manifest_pins_original_weights(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from laika.arnet_split import SPLIT_GRAPH_NAMES
+
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    folder = tmp_path / "split"
+    folder.mkdir()
+    hashes = {}
+    for name in SPLIT_GRAPH_NAMES:
+        data = (name + "-fake-onnx-subgraph").encode()
+        (folder / name).write_bytes(data)
+        hashes[name] = hashlib.sha256(data).hexdigest()
+    (folder / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "source_sha256": digest, "graphs": hashes}),
+        encoding="utf8",
+    )
+    with BokehMeARNet(
+        model,
+        strategy="low-memory",
+        expected_sha256=digest,
+        session_factory=lambda *_args, **_kwargs: FakeSession(),
+        split_graph_dir=folder,
+    ) as engine:
+        assert engine.will_split(1024, 1025)
+        assert engine.will_split(1025, 1024)
+        assert not engine.will_split(1024, 1024)
+        assert not engine.will_split(100, 101)
+        assert not engine.will_tile(1024, 1025)
+        assert engine.will_tile(1024, 1024)
+    (folder / SPLIT_GRAPH_NAMES[1]).write_bytes(b"tampered")
+    with pytest.raises(BokehInferenceError, match="checksum"):
+        BokehMeARNet(
+            model,
+            expected_sha256=digest,
+            session_factory=lambda *_args, **_kwargs: FakeSession(),
+            split_graph_dir=folder,
+        )
+
+
+def test_arnet_split_graph_config_rejects_unverified_or_invalid_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_onnxruntime(monkeypatch)
+    model, digest = _model_file(tmp_path)
+    with pytest.raises(BokehInferenceError, match="manifest"):
+        BokehMeARNet(
+            model,
+            expected_sha256=digest,
+            session_factory=lambda *_args, **_kwargs: FakeSession(),
+            split_graph_dir=tmp_path / "missing",
+        )
+    with pytest.raises(ValueError, match="split_graph_edge"):
+        BokehMeARNet(
+            model,
+            expected_sha256=digest,
+            session_factory=lambda *_args, **_kwargs: FakeSession(),
+            split_graph_edge=255,
+        )

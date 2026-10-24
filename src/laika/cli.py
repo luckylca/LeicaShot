@@ -421,6 +421,7 @@ def _run_bokeh(args: argparse.Namespace) -> int:
         strategy=args.strategy,
         intra_op_num_threads=args.threads,
         expected_sha256=args.model_sha256,
+        split_graph_dir=os.environ.get("LAIKA_ARNET_SPLIT_DIR") or None,
     ) as model:
         result = render_bokeh(
             rgb,
