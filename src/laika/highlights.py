@@ -1226,6 +1226,7 @@ def soften_highlights_inplace(
     *,
     cancel_check: Callable[[], None] | None = None,
     _skip_zero_lines: bool = True,
+    _radiance_support_range: bool = True,
 ) -> bool:
     """Apply the reference's CoC-weighted, separable tent softening in place."""
     frame = np.asarray(light)
@@ -1287,21 +1288,38 @@ def soften_highlights_inplace(
                 result[valid] += fraction[valid, None] * cells[safe_index[valid]]
                 return result
 
-            low = positions - half_width
-            high = positions + half_width
+            # A target cannot receive color from a source cell beyond its
+            # target-specific integration radius. Query only the conservative
+            # union of possible target positions around nonzero weighted
+            # radiance; retain full-length prefix sums to preserve every
+            # intermediate floating-point operation inside that union.
+            first, last = 0, line_length
+            if _radiance_support_range:
+                active = np.flatnonzero(np.any(weighted_color != 0.0, axis=1))
+                if active.size == 0:
+                    continue
+                guard = int(np.ceil(half_width.max())) + 2
+                first = max(0, int(active[0]) - guard)
+                last = min(line_length, int(active[-1]) + guard + 1)
+            targets = row[first:last]
+            target_weight = row_weight[first:last]
+            range_positions = positions[first:last]
+            range_half = half_width[first:last]
+            low = range_positions - range_half
+            high = range_positions + range_half
             mass = integral(high, prefix_weight, row_weight) - integral(
                 low, prefix_weight, row_weight
             )
             color = integral(high, prefix_color, weighted_color) - integral(
                 low, prefix_color, weighted_color
             )
-            selected = (row_weight > 0.0) & (mass > 1e-12)
+            selected = (target_weight > 0.0) & (mass > 1e-12)
             if bool(selected.any()):
                 average = (color[selected] / mass[selected, None]).astype(np.float32)
                 # The axis view may be transposed, so use the row's own weights.
-                amount = row_weight[selected].astype(np.float32)[:, None]
-                row[selected] = np.maximum(
-                    0.0, row[selected] + amount * (average - row[selected])
+                amount = target_weight[selected].astype(np.float32)[:, None]
+                targets[selected] = np.maximum(
+                    0.0, targets[selected] + amount * (average - targets[selected])
                 )
             del weighted_color, prefix_weight, prefix_color
 

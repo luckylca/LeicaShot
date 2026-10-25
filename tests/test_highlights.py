@@ -895,3 +895,38 @@ def test_softening_zero_radiance_line_skip_exact(variant: str) -> None:
     new_changed = soften_highlights_inplace(candidate, coc, _skip_zero_lines=True)
     assert orig_changed == new_changed
     np.testing.assert_array_equal(candidate, original)
+
+
+@pytest.mark.parametrize(
+    "variant", ["empty", "one", "two", "dense", "edge", "subnormal", "masked"]
+)
+@pytest.mark.parametrize("shape", [(23, 47), (81, 103)])
+def test_softening_support_roi_exact_vs_full_line(
+    variant: str, shape: tuple[int, int]
+) -> None:
+    rng = np.random.default_rng(13241)
+    h, w = shape
+    light = np.zeros((h, w, 3), dtype=np.float32)
+    if variant == "one":
+        light[h // 2, w // 3] = (0.3, 0.7, 0.8)
+    elif variant == "two":
+        light[h // 4, w // 4] = (0.2, 0.6, 0.9)
+        light[3 * h // 4, 3 * w // 4] = (0.9, 0.1, 0.2)
+    elif variant == "dense":
+        light = rng.random((h, w, 3), dtype=np.float32) * np.float32(0.9)
+    elif variant == "edge":
+        light[0, 0] = (0.9, 0.4, 0.1)
+        light[-1, -1] = (0.5, 0.2, 0.9)
+    elif variant == "subnormal":
+        light[h // 3, w // 3] = np.nextafter(np.float32(0.0), np.float32(1.0))
+    elif variant == "masked":
+        light[h // 2, w // 2] = (0.9, 0.3, 0.2)
+    coc = rng.uniform(-11.2, 11.2, (h, w)).astype(np.float32)
+    if variant == "masked":
+        coc[h // 2, w // 2] = 0.0
+    baseline = light.copy()
+    candidate = light.copy()
+    old = soften_highlights_inplace(baseline, coc, _radiance_support_range=False)
+    new = soften_highlights_inplace(candidate, coc, _radiance_support_range=True)
+    assert old is new
+    np.testing.assert_array_equal(candidate, baseline)
