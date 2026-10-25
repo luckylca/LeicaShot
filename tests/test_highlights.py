@@ -930,3 +930,21 @@ def test_softening_support_roi_exact_vs_full_line(
     new = soften_highlights_inplace(candidate, coc, _radiance_support_range=True)
     assert old is new
     np.testing.assert_array_equal(candidate, baseline)
+
+
+def test_softening_dense_probe_uses_full_reference_integral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = np.random.default_rng(529)
+    image = np.maximum(rng.random((32, 49, 3), dtype=np.float32), np.float32(1e-4))
+    coc = np.full((32, 49), np.float32(6.0), dtype=np.float32)
+    original = image.copy()
+    candidate = image.copy()
+    soften_highlights_inplace(original, coc, _radiance_support_range=False)
+
+    def never_scan(*_args, **_kwargs) -> None:
+        raise AssertionError("dense radiance should bypass support scanning")
+
+    monkeypatch.setattr(np, "flatnonzero", never_scan)
+    soften_highlights_inplace(candidate, coc, _radiance_support_range=True)
+    np.testing.assert_array_equal(candidate, original)

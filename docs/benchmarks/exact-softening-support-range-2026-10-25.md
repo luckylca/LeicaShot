@@ -73,3 +73,34 @@ still outside this Windows evaluation.
 
 No pictures, original checkpoints, converted models or raw arrays
 are committed; they remain local only.
+
+## Dense-light safeguard (final follow-up)
+
+A second generality test used three deterministic 512x1024
+synthetic light distributions, each matched old / new / new / old:
+fully dense RGB radiance, one small island and two separated
+islands. All comparisons were SHA256-identical.
+
+A pure sparse-support prepass was approximately 7% slower on
+the fully dense case due to redundant scanning. To prevent this
+predictable regression, the final code performs a bounded 16x16
+spatial sample. When all sample RGB values are strictly positive,
+it uses the original full-line integral query without range
+pruning. This conservative fallback can never change output;
+a false dense classification only forgoes some acceleration.
+The original dense softening path remains available.
+
+In post-safeguard test runs, full-dense reference ~0.66-0.77s,
+new ~0.75-0.83s with run-to-run noise; small single/double
+islands still showed meaningful acceleration. Further dense-scene
+profiling is warranted; we do not claim this guarantees a speed
+improvement for every content pattern.
+
+One additional strict unit test monkeypatches the sparse scanner
+to raise an error for dense input, proving dense fallback really
+does use the complete original integral path. Total added tests:
+15 parameterized/specialized cases.
+
+Re-running the actual native 20MP radiance after this final
+safeguard yielded 5.2604s and the SAME original float32 output
+SHA256 3bacf0e4665ed21e8dd60423e35656ab5033703a25d3bb969ac6e6ee3a79e6e1.

@@ -1247,6 +1247,15 @@ def soften_highlights_inplace(
     if not bool(np.any(weight > 0.0)):
         return False
     height, width = depth.shape
+    if _radiance_support_range:
+        # A tiny spatial sample distinguishes overwhelmingly dense radiance
+        # from the sparse light field for which target pruning is useful.
+        # Falling back to the complete original query is always exact,
+        # even if an unusual sparse image happens to pass this probe.
+        step_y = max(1, height // 16)
+        step_x = max(1, width // 16)
+        if bool(np.all(frame[::step_y, ::step_x] > 0.0)):
+            _radiance_support_range = False
 
     def soften_axis(values: Any, axis_weight: Any, axis_half: Any) -> None:
         line_count, line_length = values.shape[:2]
@@ -1294,7 +1303,11 @@ def soften_highlights_inplace(
             # radiance; retain full-length prefix sums to preserve every
             # intermediate floating-point operation inside that union.
             first, last = 0, line_length
-            if _radiance_support_range:
+            if _radiance_support_range and not (
+                np.any(weighted_color[0] != 0.0) and np.any(weighted_color[-1] != 0.0)
+            ):
+                # Both ends already contribute: the bounding ROI is
+                # necessarily the entire line, so avoid a dense scan.
                 active = np.flatnonzero(np.any(weighted_color != 0.0, axis=1))
                 if active.size == 0:
                     continue
