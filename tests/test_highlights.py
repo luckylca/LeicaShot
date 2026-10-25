@@ -948,3 +948,33 @@ def test_softening_dense_probe_uses_full_reference_integral(
     monkeypatch.setattr(np, "flatnonzero", never_scan)
     soften_highlights_inplace(candidate, coc, _radiance_support_range=True)
     np.testing.assert_array_equal(candidate, original)
+
+
+@pytest.mark.parametrize("pattern", ["no_light", "sparse", "border", "dense"])
+@pytest.mark.parametrize("row_chunk_height", [5, 17, 64])
+def test_direct_interior_optical_views_exact_and_nonmutating(
+    pattern: str, row_chunk_height: int
+) -> None:
+    rng = np.random.default_rng(27183)
+    h, w = 41, 83
+    light = np.zeros((h, w, 3), dtype=np.float32)
+    if pattern == "sparse":
+        light[17, 16] = (0.4, 0.8, 0.2)
+    elif pattern == "border":
+        light[0, 0] = (0.1, 0.7, 0.3)
+        light[-1, -1] = (0.8, 0.2, 0.5)
+    elif pattern == "dense":
+        light = rng.random((h, w, 3), dtype=np.float32) * np.float32(0.2)
+    original_source = light.copy()
+    coc = np.full((h, w), np.float32(-2.0), dtype=np.float32)
+    coc[:, 41:] = np.float32(2.0)
+    coc[5:12] = rng.uniform(-2.8, 2.8, (7, w)).astype(np.float32)
+    kwargs = {
+        "field_optics": True,
+        "radius_scale": 2.0,
+        "row_chunk_height": row_chunk_height,
+    }
+    baseline = scatter_highlights(light, coc, 2.8, _direct_tile_views=False, **kwargs)
+    candidate = scatter_highlights(light, coc, 2.8, _direct_tile_views=True, **kwargs)
+    np.testing.assert_array_equal(candidate, baseline)
+    np.testing.assert_array_equal(light, original_source)

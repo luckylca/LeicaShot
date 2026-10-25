@@ -622,6 +622,7 @@ def _scatter_field_optical(
     output_support_roi: bool = False,
     coc_interval_pruning: bool = False,
     compact_band_output: bool = True,
+    direct_tile_views: bool = True,
 ) -> Any:
     """Reference 5×5 tent-interpolated pupil, evaluated through bounded tiles."""
     height, width = depth.shape
@@ -761,9 +762,26 @@ def _scatter_field_optical(
                 if y0 >= y1 or not bool(np.any(wy[y0:y1] > 0.0)):
                     continue
                 half = kernel.shape[0] // 2
-                source_y = _reflected_rows(y0, y1, half, height)
-                source_x = _reflected_rows(x0, x1, half, width)
-                selection = np.ix_(source_y, source_x)
+                # In-bounds spatial tiles do not require reflected
+                # indices. A direct slice avoids expensive advanced-
+                # indexing copies of dark source regions. Active source
+                # colors are copied only before in-place weighting.
+                direct_source = (
+                    direct_tile_views
+                    and y0 >= half
+                    and y1 + half <= height
+                    and x0 >= half
+                    and x1 + half <= width
+                )
+                if direct_source:
+                    selection = (
+                        slice(y0 - half, y1 + half),
+                        slice(x0 - half, x1 + half),
+                    )
+                else:
+                    source_y = _reflected_rows(y0, y1, half, height)
+                    source_x = _reflected_rows(x0, x1, half, width)
+                    selection = np.ix_(source_y, source_x)
                 source_coc = depth[selection] * np.float32(radius_scale)
                 layer_weight = np.maximum(
                     np.float32(0.0),
@@ -779,7 +797,11 @@ def _scatter_field_optical(
                         # Advanced indexing owns this tile. Reuse it for the
                         # weighted source and keep the filtered tile in FP32,
                         # avoiding simultaneous full-size FP64 RGB temporaries.
-                        weighted = source_high
+                        weighted = (
+                            source_high.copy(order="C")
+                            if direct_source
+                            else source_high
+                        )
                         np.multiply(
                             weighted,
                             layer_weight[:, :, None],
@@ -967,6 +989,7 @@ def scatter_highlights(
     _output_support_roi: bool = True,
     _coc_interval_pruning: bool = True,
     _compact_band_output: bool = True,
+    _direct_tile_views: bool = True,
 ) -> Any:
     """Scatter linear highlight radiance through the aperture PSF.
 
@@ -1036,6 +1059,7 @@ def scatter_highlights(
             output_support_roi=_output_support_roi,
             coc_interval_pruning=_coc_interval_pruning,
             compact_band_output=_compact_band_output,
+            direct_tile_views=_direct_tile_views,
         )
 
     output = np.zeros_like(high)
