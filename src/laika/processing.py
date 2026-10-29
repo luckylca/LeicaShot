@@ -881,6 +881,21 @@ class LaikaProcessingEngine:
         split_graph_dir = os.environ.get("LAIKA_ARNET_SPLIT_DIR")
         if split_graph_dir:
             low_memory_options["split_graph_dir"] = split_graph_dir
+            # Experimental speed/memory tradeoff: larger half-resolution
+            # convolution tiles can use more RAM but reduce inference overhead.
+            split_edge = os.environ.get("LAIKA_ARNET_SPLIT_EDGE")
+            if split_edge is not None:
+                try:
+                    edge = int(split_edge)
+                except ValueError as exc:
+                    raise ValueError(
+                        "LAIKA_ARNET_SPLIT_EDGE must be an integer"
+                    ) from exc
+                if edge < 64 or edge > 512 or edge % 2:
+                    raise ValueError(
+                        "LAIKA_ARNET_SPLIT_EDGE must be even and in [64, 512]"
+                    )
+                low_memory_options["split_graph_edge"] = edge
         return (
             self._bokeh_factory(self.bokeh_model_path, **low_memory_options),
             True,
